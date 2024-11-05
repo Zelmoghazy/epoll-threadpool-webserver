@@ -1,0 +1,9 @@
+Show Alert:alert('Hello!')
+Open Terminal:terminator
+Open Editor:gedit
+Youtube:xdg-open https://www.youtube.com
+Files:nautilus
+Clear:clear
+Firefox:firefox
+btop: terminator -e 'btop; exec bash'
+vim: terminator -e 'vim; exec bash'

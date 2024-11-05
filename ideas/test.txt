@@ -1,0 +1,26 @@
+# Applications
+    ## Editors
+        - gedit:gedit > /dev/null 2>&1 &
+        - vim:terminator -e 'vim; exec bash' > /dev/null 2>&1 &
+    ## Utils
+        - Files:nautilus > /dev/null 2>&1 &
+# Websites
+    ## Media
+        - Youtube:xdg-open https://www.youtube.com > /dev/null 2>&1 &
+        - Twitch:xdg-open https://www.twitch.com > /dev/null 2>&1 &
+    ## Social
+        - Linkedin:xdg-open https://www.linkedin.com > /dev/null 2>&1 &
+        - Facebook:xdg-open https://www.facebook.com > /dev/null 2>&1 &
+        - Whatsapp:xdg-open https://https://web.whatsapp.com > /dev/null 2>&1 &
+# Development
+    ## Software
+        - Terminal:terminator > /dev/null 2>&1 &
+        - VSCode: code > /dev/null 2>&1 &
+# System
+    ## Monitoring
+        - btop:terminator -e 'btop; exec bash' > /dev/null 2>&1 &
+        - htop:terminator -e 'htop; exec bash' > /dev/null 2>&1 &
+    ## Wi-fi
+        - scan:nmcli -f SSID dev wifi list --rescan yes
+        - saved:nmcli con
+        - show_pass:nmcli dev wifi show

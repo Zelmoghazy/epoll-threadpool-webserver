@@ -1,0 +1,24 @@
+{
+	"categories":	{
+		"Applications":	{
+			"subcategories":	{
+				"Editors":	{
+					"items":	["gedit", "vim"]
+				},
+				"Utils":	{
+					"items":	["Files"]
+				}
+			}
+		},
+		"Websites":	{
+			"subcategories":	{
+				"Media":	{
+					"items":	["youtube"]
+				},
+				"Social":	{
+					"items":	["linkedin"]
+				}
+			}
+		}
+	}
+}
