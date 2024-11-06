@@ -26,7 +26,8 @@
 #include <sys/wait.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>  
+#include <arpa/inet.h> 
+#include <linux/limits.h> 
 
 #include "cJSON.h"
 
@@ -34,6 +35,10 @@
 
 #define PORT        "8080"    // the port users will be connecting to
 #define BACKLOG     10        // how many pending connections queue will hold
+#define MAX_REQ     21148
+#define MAX_REQUEST_SIZE 8192
+#define CR '\r'
+#define LF '\n'
 
 
 /* ----------------------- UTILS---------------------------------*/
@@ -211,6 +216,75 @@ static constexpr std::array<std::string_view, 9> valid_methods = {
     "OPTIONS", "PATCH", "TRACE", "CONNECT"
 };
 
+
+typedef enum req_state{
+    READING,
+    WRITING,
+    DONE
+}req_state;
+
+enum read_request_status {
+    READ_REQUEST_INCOMPLETE = 0,
+    READ_REQUEST_COMPLETE = 1,
+    READ_REQUEST_ERROR = -1
+};
+
+enum write_request_status {
+    WRITE_REQUEST_INCOMPLETE = 0,
+    WRITE_REQUEST_COMPLETE = 1,
+    WRITE_REQUEST_ERROR = -1
+};
+
+
+typedef struct req_context
+{
+    req_state           state;              // current state of the req
+    int                 connfd;             // client file descriptor
+    int                 epoll_fd;             // epoll file descriptor
+
+    /* Reading */
+    char                *read_buf;
+    char                *read_ptr;
+    int                 read_cnt;
+    int                 total_read;
+
+    /* Writing */
+    FILE                *req_file;
+    int                 remaining;
+}req_context;
+
+req_context *new_req_context(int connfd, int epollfd)
+{
+    req_context *c = new req_context;
+
+    c->state      = READING;
+    c->connfd     = connfd;
+    c->epoll_fd   = epollfd;
+
+    c->read_buf = new char[MAX_REQ];
+    c->read_ptr = nullptr;
+    c->read_cnt = 0;
+    c->total_read = 0;
+
+    c->req_file = nullptr;
+    c->remaining = 0;
+
+    return c;
+}
+
+void delete_req_context(req_context *c)
+{
+    if (c)
+    {
+        delete[] c->read_buf;
+        if (c->req_file) {
+            fclose(c->req_file);
+        }
+        delete c;
+    }
+}
+
+
 /* 
     Very simple class to easily build HTTP responses
     Not necessarily needed but I wanted to try method chaining 
@@ -272,12 +346,12 @@ public:
 
     std::string http_get_content_type(std::string_view file_path) 
     {
-        ext.clear();
+        extension.clear();
         auto pos = file_path.find_last_of('.');
         if (pos != std::string::npos) {
-            ext += file_path.substr(pos + 1);
+            extension += file_path.substr(pos + 1);
             // get it from the map
-            auto it = mime_types.find(ext);
+            auto it = mime_types.find(extension);
             if (it != mime_types.end()) {
                 return it->second;  
             }
@@ -315,7 +389,7 @@ public:
         if (std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", std::gmtime(&now))) 
         {
             date += buf;
-            headers["Date"] = std::string_view(date)
+            headers["Date"] = std::string_view(date);
         }
         return *this;
     }
@@ -377,7 +451,7 @@ public:
     /*
         Finally build the constructed response header
     */
-    std::string_view build() const 
+    std::string_view build() 
     {
         response.clear();
 
@@ -390,7 +464,10 @@ public:
 
         // headers
         for (const auto& header : headers) {
-            response += header.first + ": " + header.second + "\r\n";
+            response += header.first;
+            response += ": ";
+            response += header.second;
+            response += "\r\n";
         }
 
         headers.clear();
@@ -582,7 +659,7 @@ class HTTPServer
         char absolute_path[PATH_MAX]; 
 
         // verify absolute path of root directory
-        if(!realpath(root_dir.cstr(), absolute_path)){
+        if(!realpath(root_dir.c_str(), absolute_path)){
             std::cerr << "root path error:" << errno << std::endl;
             exit(1);
         }
@@ -613,14 +690,14 @@ class HTTPServer
         // get full path
         char abs_path[PATH_MAX];
         if (realpath(uri.c_str(), abs_path) == NULL){
-            return build_error_response(BAD_REQUEST, "Invalid path");
+            return build_error_response(BadRequest, "Invalid path");
         }
 
         std::string_view file_path = abs_path;
 
         // Do one more check to make sure everything is fine
         if(!file_path_check(file_path)){
-           return build_error_response(BAD_REQUEST, "Invalid path");
+           return build_error_response(BadRequest, "Invalid path");
         }
 
         size_t file_size;
@@ -630,7 +707,7 @@ class HTTPServer
             return build_error_response(NOT_FOUND, "Resource not found");
         }
 
-        c->file      = file;
+        c->req_file      = file;
         c->remaining = file_size;
 
         return build_success_response(OK,"Sending Response header", file_path, file_size);
@@ -655,6 +732,7 @@ class HTTPServer
         switch(parser.parse_request(c->read_buf))
         {
             case OK:
+            {
                 std::string_view method = parser.get_method();
                 std::string_view uri    = parser.get_uri();
 
@@ -667,7 +745,7 @@ class HTTPServer
                       be accessible via the HTTP server.
                 */
                 if (uri.find("..") != std::string::npos) {
-                    response = build_error_response(BAD_REQUEST, "Invalid path");
+                    response = build_error_response(BadRequest, "Invalid path");
                     break;
                 }
 
@@ -694,17 +772,18 @@ class HTTPServer
                     break;
                 }
                 break;
+            }
             
             case BadRequest:
-                response = build_error_response(BAD_REQUEST, "Bad Request");
+                response = build_error_response(BadRequest, "Bad Request");
                 break;
             
             case InternalServerError:
-                response = build_error_response(INTERNAL_SERVER_ERROR, "Internal Server Error");
+                response = build_error_response(InternalServerError, "Internal Server Error");
                 break;
             
             default:
-                response = build_error_response(INTERNAL_SERVER_ERROR, "Internal Server Error");
+                response = build_error_response(InternalServerError, "Internal Server Error");
                 break;
         }
 
@@ -720,7 +799,7 @@ class HTTPServer
 
     enum write_request_status send_response_file(req_context *c)
     {
-        FILE *file = c->file;
+        FILE *file = c->req_file;
         int filefd = fileno(file);
         size_t left = c->remaining;
 
@@ -751,10 +830,11 @@ class HTTPServer
                 left -= writen;
             }
         }
+
         if (left == 0) {
             return WRITE_REQUEST_COMPLETE;
         } else {
-            status->left = left;
+            c->remaining = left;
             return WRITE_REQUEST_INCOMPLETE;
         }
     }
@@ -791,7 +871,7 @@ class HTTPServer
 
     FILE *get_file_info(const std::string& filepath, size_t &size) 
     {
-        FILE *file = fopen(file_path.cstr(), "rb");
+        FILE *file = fopen(file_path.c_str(), "rb");
 
         if(!file){
             return NULL;
@@ -942,35 +1022,6 @@ void executeCommand(const std::string& command)
 }
 
 /* From W. Richard Stevens - UNIX Network Programming */
-    size_t nleft;
-    ssize_t nread;
-    char *ptr;
-
-    ptr = vptr;
-    nleft = n ;
-
-    while(nleft > 0){
-        if ((nread = read (fd, ptr, nleft)) < 0) 
-        {
-            if (errno == EINTR)
-            {
-                nread = 0;  // call read again
-            }
-            else
-            {
-                return (-1);
-            }
-        } 
-        else if (nread == 0)
-        {
-            break;          // reached EOF
-        }
-        nleft -= nread;
-        ptr += nread;
-    }
-    return (n - nleft);
-}
-
 /* Write may actually write less than expected for various reasons (interrupts, ..) */
 ssize_t                     /* Write "n" bytes to a descriptor. */
 writen(int fd, const void *vptr, size_t n)
@@ -1000,62 +1051,6 @@ writen(int fd, const void *vptr, size_t n)
         ptr   += nwritten;
     }
     return(n);
-}
-
-enum class req_state{
-    READING,
-    WRITING,
-    DONE
-}req_state;
-
-#define MAX_REQ     21148
-
-struct req_context
-{
-    req_state           state;              // current state of the req
-    int                 connfd;             // client file descriptor
-    int                 epoll_fd;             // epoll file descriptor
-
-    /* Reading */
-    char                *read_buf;
-    char                *read_ptr;
-    int                 read_cnt;
-    int                 total_read;
-
-    /* Writing */
-    FILE                *req_file;
-    int                 remaining;
-}req_context;
-
-req_context *new_req_context(int connfd, int epollfd)
-{
-    req_context *c = new req_context;
-
-    c->req_status = READING;
-    c->connfd     = connfd;
-    c->epoll_fd   = epollfd;
-
-    c->read_buf = new char[MAX_REQ];
-    c->read_ptr = nullptr;
-    c->read_cnt = 0;
-    c->total_read = 0;
-
-    c->req_file = nullptr;
-    c->remaining = 0;
-
-    return c;
-}
-
-void delete_req_context(req_context *c)
-{
-    if (c)
-    {
-        delete[] c->read_buf;
-        if (c->req_file) {
-            fclose(c->req_file);
-        }
-        delete c;
-    }
 }
 
 /* data is read into a buffer (read_buf) in chunks and then supplied to the caller one byte at a time */
@@ -1089,21 +1084,7 @@ again:
     return(1);
 }
 
-#define MAX_REQUEST_SIZE 8192
-#define CR '\r'
-#define LF '\n'
 
-enum read_request_status {
-    READ_REQUEST_INCOMPLETE = 0,
-    READ_REQUEST_COMPLETE = 1,
-    READ_REQUEST_ERROR = -1
-};
-
-enum write_request_status {
-    WRITE_REQUEST_INCOMPLETE = 0,
-    WRITE_REQUEST_COMPLETE = 1,
-    WRITE_REQUEST_ERROR = -1
-};
 
 /* Read HTTP request until finding double CRLF indicating end of headers */
 enum read_request_status read_http_request(req_context *c)
@@ -1226,13 +1207,12 @@ void handleClient(req_context *c)
                 break;
             case READ_REQUEST_ERROR:
                 c->state = DONE;
-
-                std::string_view error_resp = http_server.build_error_response(INTERNAL_SERVER_ERROR, "Internal Server Error");
+                std::string_view error_resp = http_server.build_error_response(InternalServerError, "Internal Server Error");
                 write_response(c, error_resp);
 
-                if(c->file){
-                    fclose(c->file);
-                    c->file = nullptr;
+                if(c->req_file){
+                    fclose(c->req_file);
+                    c->req_file = nullptr;
                 }
                 if(c->connfd)
                 {
@@ -1250,18 +1230,38 @@ void handleClient(req_context *c)
         switch (http_server.send_response_file(c))
         {
             case WRITE_REQUEST_INCOMPLETE:
+                c->state = WRITING;
                 break;
 
             case WRITE_REQUEST_COMPLETE:
+                c->state = DONE;
+                if(c->req_file){
+                    fclose(c->req_file);
+                    c->req_file = nullptr;
+                }
+                if(c->connfd)
+                {
+                    close(c->connfd);
+                }
+                delete_req_context(c);
                 break;
 
             case WRITE_REQUEST_ERROR:
+                c->state = DONE;
+                if(c->req_file){
+                    fclose(c->req_file);
+                    c->req_file = nullptr;
+                }
+                if(c->connfd)
+                {
+                    close(c->connfd);
+                }
+                delete_req_context(c);
                 break;
 
         }
-        
     }
-
+#if 0
     std::string request(buffer);
     std::cout << request;
     std::string request_line = request.substr(0, request.find("\r\n"));
@@ -1417,6 +1417,7 @@ void handleClient(req_context *c)
 
         send(client_sock, notFoundResponse.c_str(), notFoundResponse.size(), 0);
     }
+#endif
 }
 
 /*
@@ -1538,7 +1539,6 @@ void clientThread(req_context *state)
     handleClient(state);
 }
 
-constexpr int MAX_EVENTS = 64;
 
 class ServerException : public std::runtime_error {
 public:
@@ -1571,6 +1571,11 @@ struct Socket
 
         std::string last_error;
 
+        /*
+            the linked list may have more than one addrinfo structure
+            the application should try using the addresses in the order
+            in which they are returned until we successfully bind
+        */
         for(p = res; p != NULL; p = p->ai_next) 
         {
             // Create a TCP/IP stream socket
@@ -1579,7 +1584,10 @@ struct Socket
                 continue;
             }
 
+            // Non-blocking IO
             set_non_blocking(sockfd);
+
+            // Prevent the "Address already in use" error message
             set_opt_reuse_addr();
 
             // bind the port to the socket
@@ -1796,14 +1804,14 @@ struct EventPoll
 
     int epoll_fd;
 
-    std::function<void(req_status*)> client_handler_ = nullptr;
+    std::function<void(req_context*)> client_handler_ = nullptr;
 
     static constexpr int MAX_EVENTS     = 32;
     static constexpr int LISTEN_BACKLOG = 128;
 
     // when epoll_wait returns, this array is modified to indicate information
     // about the subset of file descriptors in the interest list that are in the ready state
-    EventPoll(const char *ip, const char *port, std::function<void(req_status*)> client_handler) :client_handler_(client_handler)
+    EventPoll(const char *ip, const char *port, std::function<void(req_context*)> client_handler) :client_handler_(client_handler)
     {
         socket = Socket(ip, port)
         socket.listen();
@@ -1863,8 +1871,12 @@ struct EventPoll
     void mod_fd_read(int fd)
     {
         struct epoll_event ev;
+        // associated file is available for read operations
+        // Requests edge-triggered notification for the associated file descriptor.
+        // Requests one-shot notification for the associated file descriptor
+        // I will rearm it based on state with maybe a new event mask
         ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
-        ev.data.ptr = /**/;
+        // ev.data.ptr = /**/;
         if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
             std::cerr << "Failed to remove fd from epoll" << std::endl;
             exit(1);
@@ -1875,7 +1887,7 @@ struct EventPoll
     {
         struct epoll_event ev;
         ev.events = EPOLLOUT | EPOLLET | EPOLLONESHOT;
-        ev.data.ptr = /**/;
+        // ev.data.ptr = /**/;
         if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
             std::cerr << "Failed to remove fd from epoll" << std::endl;
             exit(1);
@@ -1973,136 +1985,10 @@ struct EventPoll
 
 int main(void) 
 {
-    int listenfd;
-    int connfd;
-
-    char remoteIP[INET6_ADDRSTRLEN];
-
-    ThreadPool pool;
-
     signal(SIGINT, signalHandler);
 
-    if((listenfd = new_socket(NULL, PORT))<0){
-        std::cerr << "Error: couldnt create a socket file descriptor." << std::endl;
-        exit(1);
-    }
-    /*
-        e_poll monitors multiple file descriptors to see if I/O is possible on any of them. 
+    EventPoll ep(PORT);
+    ep.event_loop();
 
-        when epoll_wait returns, this array is modified to indicate information about the 
-        subset of file descriptors in the interest list that are in the ready state
-     */
-    struct epoll_event events[MAX_EVENTS];
-    
-    // creates a new epoll instance and returns a file descriptor referring to that instance.
-    int epoll_fd = epoll_create1(0);
-    if (epoll_fd < 0) {
-        std::cerr << "Failed to create epoll instance" << std::endl;
-        exit(1);
-    }
-
-    // Add listener socket to epoll 
-    struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLET;  // edge triggered
-    ev.data.fd = listenfd;
-
-    // registering interest in a particular file descriptor
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listenfd, &ev) < 0) {
-        std::cerr << "Failed to add listener to epoll" << std::endl;
-        exit(1);
-    }
-
-    /*
-        - for reaping zombie processes that appear as the fork()ed child processes exit. 
-
-        - If a process terminates, and that process has children in the zombie state,
-        the parent process ID of all the zombie children is set to 1 (the init process),
-        which will inherit the children and clean them up
-
-        - Whenever we fork children, we must wait for them to prevent them from becoming zombies.
-        To do this we establish a signal handler to catch SIGCHLD and within the handler we call wait . 
-     */
-
-    #if fork 
-        struct sigaction sa;
-        sa.sa_handler = sigchld_handler; // reap all dead processes
-        sigemptyset(&sa.sa_mask);
-        sa.sa_flags = SA_RESTART;
-        if (sigaction(SIGCHLD, &sa, NULL) == -1) {
-            perror("sigaction");
-            exit(1);
-        }
-    #endif
-
-
-    for(;;) 
-    {
-        // waits for I/O events (or interrupts), blocking the calling thread if no events are currently available.
-        // timeout of -1 causes epoll_wait() to block indefinitely
-        // TODO: set timeout
-        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
-
-        if (nfds <= 0) {
-            // most likely interrupted by a signal handler
-            std::cerr << "epoll_wait failed" << std::endl;
-            continue;
-        }
-
-        for(int i = 0; i < nfds; i++)
-        {
-            // handle connection if listener is ready
-            if(events[i].data.fd == listenfd)
-            {                
-                while(1) // may handle multiple connections at the same time
-                {
-                    struct sockaddr_storage client_addr;
-                    socklen_t cl_addr_len = sizeof(client_addr);
-
-                    /*  A new descriptor is returned by accept for each client that connects to the server. */
-                    if ((connfd = accept(listenfd, (struct sockaddr *)&client_addr, &cl_addr_len)) < 0) 
-                    {
-                        if(errno == EGAIN | errno == EWOULDBLOCK){      // error occured not just nothing to accept
-                            std::cerr << "Accept failed" << std::endl;
-                        }
-                        break;
-                    }
-
-                    // apply non-blocking IO to the connection sockets as well
-                    set_non_blocking(connfd);
-
-                    struct epoll_event ev;
-
-                    // associated file is available for read operations
-                    // Requests edge-triggered notification for the associated file descriptor.
-                    // Requests one-shot notification for the associated file descriptor
-                    // I will rearm it based on state with maybe a new event mask
-                    ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
-
-                    req_status *status = new_req_context(connfd);
-                    // keep the state     
-                    ev.data.ptr = status;
-
-                    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, connfd, &ev) == -1) {
-                        std::cerr << "Failed to add client to epoll" << std::endl;
-                        close(connfd);
-                        continue;
-                    }
-
-                    inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), remoteIP, INET6_ADDRSTRLEN);
-                    printf("Client connected from IP: %s\n", remoteIP); 
-                }
-            }
-            else
-            {
-                // Handle client data
-                req_status *status = events[i].data.ptr;
-
-                 // not null terminated
-                pool.QueueJob([status](void) {
-                    clientThread(status);
-                });
-            }
-        }
-    }
     return 0;
 }
