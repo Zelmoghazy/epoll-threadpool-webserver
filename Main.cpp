@@ -25,20 +25,23 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <sys/epoll.h>
+#include <sys/sendfile.h>
+#include <sys/utsname.h>
+
 #include <netinet/in.h>
+#include <netinet/tcp.h>  // For TCP_NODELAY
 #include <arpa/inet.h> 
 #include <linux/limits.h> 
 
 #include "cJSON.h"
 
-#include "Parser.h"
+// #include "Parser.h"
 
-#define PORT        "8080"    // the port users will be connecting to
-#define BACKLOG     10        // how many pending connections queue will hold
-#define MAX_REQ     21148
-#define MAX_REQUEST_SIZE 8192
-#define CR '\r'
-#define LF '\n'
+#define PORT                "8080"    // the port users will be connecting to
+#define MAX_REQ             21148
+#define MAX_REQUEST_SIZE    8192
+#define CR                  '\r'
+#define LF                  '\n'
 
 
 /* ----------------------- UTILS---------------------------------*/
@@ -133,6 +136,10 @@ void deserializeMap(std::unordered_map<std::string, std::string>& map, const std
     file.close();
 }
 
+
+
+
+
 /* 
     - The Status-Code element is a 3-digit integer result code 
       of the attempt to understand and satisfy the request. 
@@ -144,8 +151,8 @@ typedef enum StatusCode {
     Created,
     Accepted,
     NoContent,
-    MovedPermanentl,
-    MovedTemporaril,
+    MovedPermanently,
+    MovedTemporarily,
     NotModified,
     BadRequest,
     Unauthorized,
@@ -285,6 +292,70 @@ void delete_req_context(req_context *c)
 }
 
 
+/* From W. Richard Stevens - UNIX Network Programming */
+/* Write may actually write less than expected for various reasons (interrupts, ..) */
+ssize_t                     /* Write "n" bytes to a descriptor. */
+writen(int fd, const void *vptr, size_t n)
+{
+    size_t      nleft;
+    ssize_t     nwritten;
+    const char  *ptr;
+
+    ptr = (char *)vptr;
+    nleft = n;
+
+    // loop until all bytes are written
+    while (nleft > 0) {
+        if ( (nwritten = write(fd, ptr, nleft)) <= 0) {
+            // Interrupt occurred , just try again
+            if (nwritten < 0 && errno == EINTR){
+                nwritten = 0;       /* and call write() again */
+            }
+            else
+            {
+                // actual error
+                return(-1);         /* error */
+            }
+        }
+
+        nleft -= nwritten;
+        ptr   += nwritten;
+    }
+    return(n);
+}
+
+/* data is read into a buffer (read_buf) in chunks and then supplied to the caller one byte at a time */
+static ssize_t my_read(req_context *c, char *ptr)
+{
+    // check if the buffer still contains data
+    if (c->read_cnt <= 0) {
+again:
+        // all bytes are read, read more from the file
+        if ((c->read_cnt = read(c->connfd, (c->read_buf + c->total_read), sizeof(c->read_buf)-c->total_read)) < 0) {
+            if (errno == EINTR){
+                // interrupted, try again
+                goto again;
+            }
+            // error occurred
+            return(-1);
+        } 
+        else if (c->read_cnt == 0)
+        {
+            // end-of-file
+            return(0);
+        }
+        c->read_ptr     = c->read_buf;
+        c->total_read  += c->read_cnt;
+    }
+
+    // buffer still contains data, return one byte at a time using *ptr
+    c->read_cnt--;
+    *ptr = *c->read_ptr++;
+    // read successfully
+    return(1);
+}
+
+
 /* 
     Very simple class to easily build HTTP responses
     Not necessarily needed but I wanted to try method chaining 
@@ -316,7 +387,7 @@ public:
         extension.reserve(16);
     }
 
-    HTTPBuilder& http_resp_add_status(StatusCode idx) 
+    HTTPBuilder& http_resp_add_status(int idx) 
     {
         status_code = idx;
         return *this;
@@ -650,10 +721,10 @@ class HTTPServer
     HTTPBuilder builder;
     std::string root_directory;
 
-    using RequestHandler = std::function<std::string(req_context *c)>;
-    std::unordered_map<std::string, std::unordered_map<std::string, RequestHandler>> route_handlers;
+    using RequestHandler = std::function<std::string_view(req_context *c)>;
+    std::unordered_map<std::string_view, std::unordered_map<std::string_view, RequestHandler>> route_handlers;
 
-
+public:
     HTTPServer(const std::string& root_dir = "./www")
     {
         char absolute_path[PATH_MAX]; 
@@ -670,16 +741,16 @@ class HTTPServer
 
     void setup_default_routes() 
     {
-        add_route("GET", "/", [this](req_context *c) {
+        add_route("GET", "/", [this](req_context *c) -> std::string_view {
             return response_static_file(c, "./index.html");
         });
 
-        add_route("GET", "/about", [this](req_context *c) {
+        add_route("GET", "/about", [this](req_context *c) -> std::string_view {
             return response_static_file(c, "./about.html");
         });
     }
 
-    void add_route(const std::string& method, const std::string& path, RequestHandler handler) 
+    void add_route(const std::string_view method, const std::string_view path, RequestHandler handler) 
     {
         route_handlers[method][path] = handler;
     }
@@ -689,7 +760,7 @@ class HTTPServer
     {
         // get full path
         char abs_path[PATH_MAX];
-        if (realpath(uri.c_str(), abs_path) == NULL){
+        if (realpath(std::string(uri).c_str(), abs_path) == NULL){
             return build_error_response(BadRequest, "Invalid path");
         }
 
@@ -701,16 +772,16 @@ class HTTPServer
         }
 
         size_t file_size;
-        FILE *file = get_file_info(file_path, file_size);
+        FILE *file = get_file_info(abs_path, file_size);
 
         if(!file){
-            return build_error_response(NOT_FOUND, "Resource not found");
+            return build_error_response(NotFound, "Resource not found");
         }
 
         c->req_file      = file;
         c->remaining = file_size;
 
-        return build_success_response(OK,"Sending Response header", file_path, file_size);
+        return build_success_response(OK, file_path, file_size);
     }
 
 
@@ -750,7 +821,7 @@ class HTTPServer
                 }
 
                 if (route_handlers.find(method) == route_handlers.end()) {
-                    response = build_error_response(METHOD_NOT_ALLOWED, "Method not allowed");
+                    response = build_error_response(BadRequest, "Method not allowed");
                     break;
                 }
 
@@ -792,8 +863,8 @@ class HTTPServer
 
     void write_response(req_context *c , std::string_view response)
     {
-        if(writen(c->connfd, response.c_str(),response.size())<0){
-            std:cerr << "Error while sending the response header" << std::endl;
+        if(writen(c->connfd, std::string(response).c_str(), response.size())<0){
+            std::cerr << "Error while sending the response header" << std::endl;
         }
     }
 
@@ -811,7 +882,7 @@ class HTTPServer
                 The sendfile() function in Linux lets you tell 
                 the kernel to send part or all of a file. 
              */
-            writen = sendfile(connfd, filefd, NULL, left);
+            writen = sendfile(c->connfd, filefd, NULL, left);
 
             if (writen < 0) 
             {
@@ -839,14 +910,10 @@ class HTTPServer
         }
     }
 
-    bool file_path_check(const std::string_view file_path) 
+    bool file_path_check(std::string_view file_path) 
     {
         // make sure no malicious traversing is done
-        if (strncmp(root_directory.c_str(), file_path.c_str(), root_directory.length()) != 0) 
-        {
-            return false;
-        }
-        return true;
+        return file_path.substr(0, root_directory.length()) == root_directory;
     }
 
     std::string_view build_error_response(int status, const std::string& message) 
@@ -860,18 +927,18 @@ class HTTPServer
             .build();
     }
 
-    std::string_view build_success_response(int status, const std::string& file_path, const size_t file_size) 
+    std::string_view build_success_response(int status, const std::string_view file_path, const size_t file_size) 
     { 
         return builder
             .http_resp_add_status(status)
-            .http_resp_add_content_type(builder.get_content_type(file_path))
-            .http_resp_add_content_length()
+            .http_resp_add_content_type(builder.http_get_content_type(file_path))
+            .http_resp_add_content_length(file_size)
             .build();
     }
 
-    FILE *get_file_info(const std::string& filepath, size_t &size) 
+    FILE *get_file_info(const char* filepath, size_t &size) 
     {
-        FILE *file = fopen(file_path.c_str(), "rb");
+        FILE *file = fopen(filepath, "rb");
 
         if(!file){
             return NULL;
@@ -883,7 +950,7 @@ class HTTPServer
 
         return file;
     }
-}
+};
 
 // Every thread can have a local copy of this global object
 // Supposed to be not shared among them
@@ -1021,69 +1088,6 @@ void executeCommand(const std::string& command)
     }
 }
 
-/* From W. Richard Stevens - UNIX Network Programming */
-/* Write may actually write less than expected for various reasons (interrupts, ..) */
-ssize_t                     /* Write "n" bytes to a descriptor. */
-writen(int fd, const void *vptr, size_t n)
-{
-    size_t      nleft;
-    ssize_t     nwritten;
-    const char  *ptr;
-
-    ptr = vptr;
-    nleft = n;
-
-    // loop until all bytes are written
-    while (nleft > 0) {
-        if ( (nwritten = write(fd, ptr, nleft)) <= 0) {
-            // Interrupt occurred , just try again
-            if (nwritten < 0 && errno == EINTR){
-                nwritten = 0;       /* and call write() again */
-            }
-            else
-            {
-                // actual error
-                return(-1);         /* error */
-            }
-        }
-
-        nleft -= nwritten;
-        ptr   += nwritten;
-    }
-    return(n);
-}
-
-/* data is read into a buffer (read_buf) in chunks and then supplied to the caller one byte at a time */
-static ssize_t my_read(req_context *c, char *ptr)
-{
-    // check if the buffer still contains data
-    if (c->read_cnt <= 0) {
-again:
-        // all bytes are read, read more from the file
-        if ((c->read_cnt = read(c->connfd, (c->read_buf + c->total_read), sizeof(c->read_buf)-c->total_read)) < 0) {
-            if (errno == EINTR){
-                // interrupted, try again
-                goto again;
-            }
-            // error occurred
-            return(-1);
-        } 
-        else if (c->read_cnt == 0)
-        {
-            // end-of-file
-            return(0);
-        }
-        c->read_ptr     = c->read_buf;
-        c->total_read  += c->read_cnt;
-    }
-
-    // buffer still contains data, return one byte at a time using *ptr
-    c->read_cnt--;
-    *ptr = *c->read_ptr++;
-    // read successfully
-    return(1);
-}
-
 
 
 /* Read HTTP request until finding double CRLF indicating end of headers */
@@ -1155,6 +1159,7 @@ enum read_request_status read_http_request(req_context *c)
     {
        /* Real error occurred */
         std::cerr << "EOF received, client may have disconnected : " << std::strerror(errno) << std::endl;
+        return READ_REQUEST_COMPLETE;
     }
 
     /* Need more data */
@@ -1166,7 +1171,7 @@ void mod_fd_read(req_context *c)
     struct epoll_event ev;
     ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
     ev.data.ptr = c;
-    if (epoll_ctl(c->epollfd, EPOLL_CTL_MOD, c->connfd, &ev) == -1) {
+    if (epoll_ctl(c->epoll_fd, EPOLL_CTL_MOD, c->connfd, &ev) == -1) {
         std::cerr << "Failed to remove fd from epoll" << std::endl;
     }
 }
@@ -1176,7 +1181,7 @@ void mod_fd_write(req_context *c)
     struct epoll_event ev;
     ev.events = EPOLLOUT | EPOLLET | EPOLLONESHOT;
     ev.data.ptr = c;
-    if (epoll_ctl(c->epollfd, EPOLL_CTL_MOD, c->connfd, &ev) == -1) {
+    if (epoll_ctl(c->epoll_fd, EPOLL_CTL_MOD, c->connfd, &ev) == -1) {
         std::cerr << "Failed to remove fd from epoll" << std::endl;
     }
 }
@@ -1208,7 +1213,7 @@ void handleClient(req_context *c)
             case READ_REQUEST_ERROR:
                 c->state = DONE;
                 std::string_view error_resp = http_server.build_error_response(InternalServerError, "Internal Server Error");
-                write_response(c, error_resp);
+                http_server.write_response(c, error_resp);
 
                 if(c->req_file){
                     fclose(c->req_file);
@@ -1458,6 +1463,7 @@ void signalHandler(int signum)
     exit(signum);
 }
 
+#if 0
 int new_socket(const char *ip, const char *port)
 {
     struct addrinfo hints, *res, *p;
@@ -1533,6 +1539,7 @@ int new_socket(const char *ip, const char *port)
 
     return listenfd;
 }
+#endif 
 
 void clientThread(req_context *state)
 {
@@ -1549,13 +1556,11 @@ public:
 struct Socket
 {
     int sockfd;
-    constexpr int BACKLOG = 10;
+    static constexpr int BACKLOG = 10; // how many pending connections queue will hold
 
-    Socket():sockfd(-1)
-    {
-    }
+    Socket(): sockfd(-1){}
 
-    Socket(const char *ip, const char *port):sockfd(-1)
+    void tcp_socket(const char *ip, const char* port)
     {
         struct addrinfo hints, *res, *p;
 
@@ -1564,8 +1569,9 @@ struct Socket
         hints.ai_socktype = SOCK_STREAM;      // TCP
         hints.ai_flags    = AI_PASSIVE;       // fill in my IP for me
 
+        int err;
         /* Make it protocol independent */
-        if (getaddrinfo(ip, port, &hints, &res) < 0) {
+        if ((err = getaddrinfo(ip, port, &hints, &res)) < 0) {
             throw ServerException(std::string("getaddrinfo error: ") + gai_strerror(err));
         }
 
@@ -1579,7 +1585,7 @@ struct Socket
         for(p = res; p != NULL; p = p->ai_next) 
         {
             // Create a TCP/IP stream socket
-            if ((sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) < 0) {
+            if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0) {
                 last_error = std::string("Socket creation failed: ") + std::strerror(errno);
                 continue;
             }
@@ -1591,7 +1597,7 @@ struct Socket
             set_opt_reuse_addr();
 
             // bind the port to the socket
-            if (bind(sockfd, res->ai_addr, res->ai_addrlen) == -1) {
+            if (bind(sockfd, p->ai_addr, p->ai_addrlen) < 0) {
                 last_error = std::string("Binding failed: ") + std::strerror(errno);
                 close(sockfd);
                 continue;
@@ -1600,12 +1606,30 @@ struct Socket
         }    
 
         // not needed anymore
-        freeaddr_info(res);
+        freeaddrinfo(res);
 
         // didnt bind
         if(p == NULL){
             throw ServerException("Failed to bind to any address. Last error: " + last_error);
         }
+    }
+
+    Socket(const Socket&) = delete;  
+    Socket& operator=(const Socket&) = delete;
+
+    Socket(Socket&& other) noexcept : sockfd(other.sockfd) {
+        other.sockfd = -1;
+    }
+
+    Socket& operator=(Socket&& other) noexcept {
+        if (this != &other) {
+            if (sockfd != -1) {
+                close(sockfd);
+            }
+            sockfd = other.sockfd;
+            other.sockfd = -1;
+        }
+        return *this;
     }
 
     ~Socket()
@@ -1615,14 +1639,11 @@ struct Socket
         }
     }
 
-    // remove copy constructor
-    Socket(const Socket&) = delete;
-    Socket& operator=(const Socket&) = delete;
-
-    void listen()
+    void wait_connection()
     {
         /* Convert socket to listening socket */
-        if (::listen(sockfd, BACKLOG) < 0) {          // calling POSIX listen not my listen :)
+        if (listen(sockfd, BACKLOG) < 0) {          // calling POSIX listen not my listen :)
+            close(sockfd);
             throw ServerException(std::string("Listen failed: ") +  std::strerror(errno));
         }
 
@@ -1795,7 +1816,7 @@ struct Socket
             exit(1);
         }
     }
-}
+};
 
 struct EventPoll
 {
@@ -1813,8 +1834,8 @@ struct EventPoll
     // about the subset of file descriptors in the interest list that are in the ready state
     EventPoll(const char *ip, const char *port, std::function<void(req_context*)> client_handler) :client_handler_(client_handler)
     {
-        socket = Socket(ip, port)
-        socket.listen();
+        socket.tcp_socket(ip, port);
+        socket.wait_connection();
 
         // creates a new epoll instance and returns a file descriptor referring to that instance.
         if ((epoll_fd = epoll_create1(0)) < 0) {
@@ -1822,13 +1843,10 @@ struct EventPoll
         }
 
         // Add listener socket to epoll, register it in edge triggered mode 
-        poll.register_fd(socket.get_socket(), (EPOLLIN | EPOLLET));
+        register_fd(socket.get_socket(), (EPOLLIN | EPOLLET));
     }
 
-    EventPoll(const char *port)
-    {
-        EventPoll(NULL, port);
-    }
+    EventPoll(const char* port,  std::function<void(req_context*)> client_handler) : EventPoll(NULL,port,client_handler){}
 
     void register_fd(int fd, int event_flags)
     {
@@ -1850,7 +1868,7 @@ struct EventPoll
         ev.data.ptr = c;
 
         // registering interest in a particular file descriptor
-        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) 
+        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, c->connfd, &ev) < 0) 
         {
             std::cerr << "Failed to register a file descriptor" << std::strerror(errno) << std::endl;
             return -1;
@@ -1964,7 +1982,7 @@ struct EventPoll
 
     void handle_client_data(void* data) 
     {
-        req_status* context = static_cast<req_context*>(data);
+        req_context* context = static_cast<req_context*>(data);
 
         if (client_handler_) 
         {
@@ -1987,7 +2005,7 @@ int main(void)
 {
     signal(SIGINT, signalHandler);
 
-    EventPoll ep(PORT);
+    EventPoll ep("8080", clientThread);
     ep.event_loop();
 
     return 0;

@@ -1,8 +1,8 @@
 CC=g++
 EXT=cpp
 
-OPT=
-DBG=
+OPT=-O0
+DBG=-g
 WARNINGS=-Wall -Wextra -Wsign-conversion -Wconversion
 DEPFLAGS=-MP -MD
 
