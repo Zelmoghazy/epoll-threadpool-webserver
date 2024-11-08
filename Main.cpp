@@ -331,7 +331,7 @@ static ssize_t my_read(req_context *c, char *ptr)
     if (c->read_cnt <= 0) {
 again:
         // all bytes are read, read more from the file
-        if ((c->read_cnt = read(c->connfd, (c->read_buf + c->total_read), sizeof(c->read_buf)-c->total_read)) < 0) {
+        if ((c->read_cnt = read(c->connfd, (c->read_buf + c->total_read), MAX_REQ - c->total_read)) < 0) {
             if (errno == EINTR){
                 // interrupted, try again
                 goto again;
@@ -551,6 +551,7 @@ public:
     }
 };
 
+using namespace std::literals;
 /*
     To parse the incoming request header
 */
@@ -584,7 +585,7 @@ public:
         std::string_view request(req);  // no copying (I think ?)
 
         /* ------------------ Request line ------------------ */ 
-        auto end_of_line = request.find("\r\n");
+        auto end_of_line = request.find("\r\n"sv);
         if (end_of_line == std::string_view::npos) {
             return BadRequest; 
         }
@@ -627,7 +628,7 @@ public:
         }
 
         // Parse rest of headers
-        if (!parse_headers(request.substr(end_of_line + 2))) {
+        if (parse_headers(request.substr(end_of_line + 2))) {
             return BadRequest;  
         }
 
@@ -725,13 +726,13 @@ class HTTPServer
     std::unordered_map<std::string_view, std::unordered_map<std::string_view, RequestHandler>> route_handlers;
 
 public:
-    HTTPServer(const std::string& root_dir = "./www")
+    HTTPServer(std::string root_dir = "./Web")
     {
         char absolute_path[PATH_MAX]; 
 
         // verify absolute path of root directory
         if(!realpath(root_dir.c_str(), absolute_path)){
-            std::cerr << "root path error:" << errno << std::endl;
+            std::cerr << "root path error:" <<  std::strerror(errno) << std::endl;
             exit(1);
         }
 
@@ -746,7 +747,7 @@ public:
         });
 
         add_route("GET", "/about", [this](req_context *c) -> std::string_view {
-            return response_static_file(c, "./about.html");
+            return response_static_file(c, "./Web/about.html");
         });
     }
 
@@ -839,7 +840,7 @@ public:
                 }
                 else
                 {
-                    response =  method_routes[uri](c);
+                    response = route_handlers[method][uri](c);
                     break;
                 }
                 break;
@@ -912,8 +913,19 @@ public:
 
     bool file_path_check(std::string_view file_path) 
     {
-        // make sure no malicious traversing is done
-        return file_path.substr(0, root_directory.length()) == root_directory;
+        size_t actual_root_length = strlen(root_directory.c_str());
+        
+        if (file_path.length() < actual_root_length) {
+            return false;
+        }
+
+        // Compare only up to the actual null-terminated length
+        for (size_t i = 0; i < actual_root_length; ++i) {
+            if (file_path[i] != root_directory[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     std::string_view build_error_response(int status, const std::string& message) 
@@ -1208,7 +1220,7 @@ void handleClient(req_context *c)
             case READ_REQUEST_COMPLETE:
                 c->state = WRITING;
 
-                mod_fd_write(c);
+                // mod_fd_write(c);
                 break;
             case READ_REQUEST_ERROR:
                 c->state = DONE;
@@ -1541,11 +1553,6 @@ int new_socket(const char *ip, const char *port)
 }
 #endif 
 
-void clientThread(req_context *state)
-{
-    handleClient(state);
-}
-
 
 class ServerException : public std::runtime_error {
 public:
@@ -1864,7 +1871,7 @@ struct EventPoll
     int register_fd_ctx(req_context *c, int event_flags)
     {
         struct epoll_event ev;
-        ev.events = event_flags;
+        ev.events = (EPOLLIN | EPOLLET | EPOLLONESHOT);
         ev.data.ptr = c;
 
         // registering interest in a particular file descriptor
@@ -2005,7 +2012,7 @@ int main(void)
 {
     signal(SIGINT, signalHandler);
 
-    EventPoll ep("8080", clientThread);
+    EventPoll ep("8080", handleClient);
     ep.event_loop();
 
     return 0;
