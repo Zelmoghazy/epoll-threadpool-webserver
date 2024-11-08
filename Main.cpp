@@ -522,7 +522,7 @@ public:
     /*
         Finally build the constructed response header
     */
-    std::string_view build() 
+    std::string& build() 
     {
         response.clear();
 
@@ -722,8 +722,8 @@ class HTTPServer
     HTTPBuilder builder;
     std::string root_directory;
 
-    using RequestHandler = std::function<std::string_view(req_context *c)>;
-    std::unordered_map<std::string_view, std::unordered_map<std::string_view, RequestHandler>> route_handlers;
+    using RequestHandler = std::function<std::string&(req_context *c)>;
+    std::unordered_map<std::string, std::unordered_map<std::string, RequestHandler>> route_handlers;
 
 public:
     HTTPServer(std::string root_dir = "./Web")
@@ -742,26 +742,26 @@ public:
 
     void setup_default_routes() 
     {
-        add_route("GET", "/", [this](req_context *c) -> std::string_view {
-            return response_static_file(c, "./index.html");
+        add_route("GET", "/", [this](req_context *c) -> std::string& {
+            return response_static_file(c, "./Web/index.html");
         });
 
-        add_route("GET", "/about", [this](req_context *c) -> std::string_view {
+        add_route("GET", "/about", [this](req_context *c) -> std::string& {
             return response_static_file(c, "./Web/about.html");
         });
     }
 
-    void add_route(const std::string_view method, const std::string_view path, RequestHandler handler) 
+    void add_route(const std::string& method, const std::string& path, RequestHandler handler) 
     {
         route_handlers[method][path] = handler;
     }
 
 
-    std::string_view response_static_file(req_context *c, std::string_view uri)
+    std::string& response_static_file(req_context *c, const std::string& uri)
     {
         // get full path
         char abs_path[PATH_MAX];
-        if (realpath(std::string(uri).c_str(), abs_path) == NULL){
+        if (realpath(uri.c_str(), abs_path) == NULL){
             return build_error_response(BadRequest, "Invalid path");
         }
 
@@ -780,7 +780,7 @@ public:
         }
 
         c->req_file      = file;
-        c->remaining = file_size;
+        c->remaining     = file_size;
 
         return build_success_response(OK, file_path, file_size);
     }
@@ -797,16 +797,17 @@ public:
             .build();
     }
 
-    void send_response_header(req_context *c)
+    int send_response_header(req_context *c)
     {
-        std::string_view response;
+        int ret = 0;
+        std::string response;
 
         switch(parser.parse_request(c->read_buf))
         {
             case OK:
             {
-                std::string_view method = parser.get_method();
-                std::string_view uri    = parser.get_uri();
+                const std::string& method = parser.get_method();
+                const std::string& uri    = parser.get_uri();
 
                 /*
                     - Many operating systems use ".." as a path component to indicate a
@@ -862,9 +863,9 @@ public:
         write_response(c, response);
     }
 
-    void write_response(req_context *c , std::string_view response)
+    void write_response(req_context *c , std::string& response)
     {
-        if(writen(c->connfd, std::string(response).c_str(), response.size())<0){
+        if(writen(c->connfd, response.c_str(), response.size())<0){
             std::cerr << "Error while sending the response header" << std::endl;
         }
     }
@@ -872,6 +873,12 @@ public:
     enum write_request_status send_response_file(req_context *c)
     {
         FILE *file = c->req_file;
+
+        if(file==nullptr)
+        {
+            return WRITE_REQUEST_COMPLETE;
+        }
+
         int filefd = fileno(file);
         size_t left = c->remaining;
 
@@ -879,6 +886,16 @@ public:
 
         while (left > 0) 
         {
+            // Check file size
+            off_t file_size;
+            if ((file_size = lseek(filefd, 0, SEEK_END)) == -1) {
+                perror("lseek failed");
+            }
+            // Reset position to beginning
+            lseek(filefd, 0, SEEK_SET);
+
+            // Now try sendfile with explicit offset
+            off_t offset = 0;
             /* 
                 The sendfile() function in Linux lets you tell 
                 the kernel to send part or all of a file. 
@@ -928,7 +945,7 @@ public:
         return true;
     }
 
-    std::string_view build_error_response(int status, const std::string& message) 
+    std::string& build_error_response(int status, const std::string& message) 
     {
         return builder
             .http_resp_add_status(status)
@@ -939,7 +956,7 @@ public:
             .build();
     }
 
-    std::string_view build_success_response(int status, const std::string_view file_path, const size_t file_size) 
+    std::string& build_success_response(int status, const std::string_view file_path, const size_t file_size) 
     { 
         return builder
             .http_resp_add_status(status)
@@ -1224,7 +1241,7 @@ void handleClient(req_context *c)
                 break;
             case READ_REQUEST_ERROR:
                 c->state = DONE;
-                std::string_view error_resp = http_server.build_error_response(InternalServerError, "Internal Server Error");
+                std::string& error_resp = http_server.build_error_response(InternalServerError, "Internal Server Error");
                 http_server.write_response(c, error_resp);
 
                 if(c->req_file){
@@ -1248,11 +1265,13 @@ void handleClient(req_context *c)
         {
             case WRITE_REQUEST_INCOMPLETE:
                 c->state = WRITING;
+                mod_fd_write(c);
                 break;
 
             case WRITE_REQUEST_COMPLETE:
                 c->state = DONE;
-                if(c->req_file){
+                if(c->req_file)
+                {
                     fclose(c->req_file);
                     c->req_file = nullptr;
                 }

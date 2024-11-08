@@ -1,228 +1,56 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PC Control</title>
+    <title>Server Test Page</title>
     <style>
         body {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            margin: 0;
             font-family: Arial, sans-serif;
-            background-color: #f0f0f0;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            line-height: 1.6;
         }
-
-        h1 {
-            margin-bottom: 20px;
-            color: #333;
-        }
-
-        #button-container {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-
-        .button-wrapper {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-
-        button {
-            padding: 10px 20px;
-            font-size: 16px;
-            background-color: #4CAF50;
-            color: white;
-            border: none;
+        .status {
+            padding: 20px;
             border-radius: 5px;
-            cursor: pointer;
-            transition: background-color 0.3s;
+            background-color: #e8f5e9;
+            margin: 20px 0;
         }
-
-        button:hover {
-            background-color: #45a049;
+        .server-info {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 5px;
         }
-
-        .remove-btn {
-            background-color: #f44336;
-            padding: 5px 10px;
-        }
-
-        .remove-btn:hover {
-            background-color: #d32f2f;
-        }
-
-        #add-button-form {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-
-        input {
-            padding: 5px;
-            font-size: 16px;
-        }
-
-        #message {
-            margin-top: 10px;
-            font-weight: bold;
-        }
-
-        .success {
-            color: green;
-        }
-
-        .error {
-            color: red;
+        h1 {
+            color: #2c3e50;
         }
     </style>
 </head>
-
 <body>
-    <h1>PC Control</h1>
-    <div id="button-container"></div>
+    <h1>Server Test Page</h1>
+    <div class="status">
+        <h2>✅ Server is running!</h2>
+        <p>If you can see this page, your web server is working correctly.</p>
+    </div>
+    
+    <div class="server-info">
+        <h2>Basic Server Information</h2>
+        <ul>
+            <li>Page loaded successfully</li>
+            <li>HTML rendering: Working</li>
+            <li>CSS styling: Working</li>
+        </ul>
+    </div>
 
-    <form id="add-button-form">
-        <input type="text" id="button-name" placeholder="Button Name" required>
-        <input type="text" id="button-action" placeholder="Button Action" required>
-        <button type="submit">Add Button</button>
-    </form>
-
-    <div id="message"></div>
-
-    <script>
-        const buttonContainer = document.getElementById('button-container');
-        const addButtonForm = document.getElementById('add-button-form');
-        const messageDiv = document.getElementById('message');
-
-        function createButton(buttonData) {
-            const wrapper = document.createElement('div');
-            wrapper.className = 'button-wrapper';
-
-            const button = document.createElement('button');
-            button.innerHTML = buttonData.label;
-            button.id = buttonData.id || `button-${Date.now()}`;
-
-            button.addEventListener('click', () => {
-                fetch('/action', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ action: buttonData.action }),
-                })
-                    .then(response => response.text())
-                    .then(data => {
-                        console.log('Server response:', data);
-                        showMessage('Action executed successfully', 'success');
-                    })
-                    .catch(error => {
-                        console.error('Error:', error);
-                        showMessage(`Error: ${error.message}`, 'error');
-                    });
-            });
-
-            const removeButton = document.createElement('button');
-            removeButton.innerHTML = 'X';
-            removeButton.className = 'remove-btn';
-            removeButton.addEventListener('click', () => removeButton(button.id));
-
-            wrapper.appendChild(button);
-            wrapper.appendChild(removeButton);
-            buttonContainer.appendChild(wrapper);
-        }
-
-        function removeButton(id) {
-            fetch('/remove-button', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ id: id }),
-            })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        const buttonWrapper = document.getElementById(id).parentNode;
-                        buttonWrapper.remove();
-                        showMessage('Button removed successfully', 'success');
-                    } else {
-                        throw new Error(data.message || 'Failed to remove button');
-                    }
-                })
-                .catch(error => {
-                    console.error('Error removing button:', error);
-                    showMessage(`Error removing button: ${error.message}`, 'error');
-                });
-        }
-
-        function fetchButtons() {
-            fetch('/buttons')
-                .then(response => response.json())
-                .then(data => {
-                    buttonContainer.innerHTML = ''; // Clear existing buttons
-                    data.buttons.forEach(createButton);
-                })
-                .catch(error => {
-                    console.error('Error fetching buttons:', error);
-                    showMessage(`Error fetching buttons: ${error.message}`, 'error');
-                });
-        }
-
-        function showMessage(text, type) {
-            messageDiv.textContent = text;
-            messageDiv.className = type;
-        }
-
-        // Initial fetch of buttons
-        fetchButtons();
-
-        addButtonForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const buttonName = document.getElementById('button-name').value;
-            const buttonAction = document.getElementById('button-action').value;
-
-            const newButton = {
-                label: buttonName,
-                action: buttonAction
-            };
-
-            fetch('/add-button', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(newButton),
-            })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.success) {
-                        createButton(newButton);
-                        addButtonForm.reset();
-                        showMessage('Button added successfully', 'success');
-                    } else {
-                        throw new Error(data.message || 'Unknown error occurred');
-                    }
-                })
-                .catch(error => {
-                    console.error('Error adding button:', error);
-                    showMessage(`Error adding button: ${error.message}`, 'error');
-                });
-        });
-    </script>
+    <div>
+        <h2>Next Steps</h2>
+        <p>TODO:</p>
+        <ul>
+            <li>Fix few more bugs</li>
+            <li>Cleanup the code</li>
+        </ul>
+    </div>
 </body>
-
 </html>
