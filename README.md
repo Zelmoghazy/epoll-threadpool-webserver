@@ -1,7 +1,11 @@
 Minimal Multithreaded HTTP/1.0 server implementation using epoll and a thread pool in C++
 
+<p align="center">
+  <img src="./Images/Test1.gif"
+       width="100%" 
+       style="border-radius: 30px;"/>
+</p>
 
-<video controls src="Images/test1.mp4" title="Test1"></video>
 
 ## References
 * https://developer.mozilla.org/en-US/docs/Web/HTTP/Overview
