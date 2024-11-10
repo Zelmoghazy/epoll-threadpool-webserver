@@ -1,23 +1,28 @@
-#include <cerrno>
-#include <condition_variable>
-#include <functional>
 #include <iostream>
-#include <mutex>
-#include <queue>
+#include <fstream> 
+
 #include <vector>
 #include <string>
-#include <atomic>
-#include <thread>
+#include <string_view>
+#include <queue>
 #include <unordered_map>
+
+#include <functional>
+
+#include <thread>
+#include <condition_variable>
+#include <atomic>
+#include <mutex>
+
 #include <cstring> 
-#include <fstream> 
+#include <cerrno>
 #include <ctime>
 
 #include <unistd.h>
 #include <cstdlib> 
-#include <signal.h>
 #include <netdb.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <poll.h>
 #include <assert.h>
 
@@ -37,9 +42,11 @@
 
 // #include "Parser.h"
 
+using namespace std::literals;
+
 #define PORT                "8080"    // the port users will be connecting to
-#define MAX_REQ             21148
-#define MAX_REQUEST_SIZE    8192
+#define MAX_REQUEST_SIZE    8192U     // cap it at 8K  
+
 #define CR                  '\r'
 #define LF                  '\n'
 
@@ -136,10 +143,6 @@ void deserializeMap(std::unordered_map<std::string, std::string>& map, const std
     file.close();
 }
 
-
-
-
-
 /* 
     - The Status-Code element is a 3-digit integer result code 
       of the attempt to understand and satisfy the request. 
@@ -164,12 +167,13 @@ typedef enum StatusCode {
     ServiceUnavailable,
 }StatusCode;
 
-typedef struct status_code{
+typedef struct status_code_t{
     int code;
     const char* reason;
-}status_code;
+}status_code_t;
 
-status_code codes[] = {
+status_code_t codes[] = 
+{
     /*  2xx: Success - The action was successfully received, understood, and accepted. */
     {200, "OK"},
     {201, "Created"},
@@ -218,11 +222,11 @@ const std::unordered_map<std::string, std::string> mime_types =
 };
 
 /* Valid HTTP Methods */
-static constexpr std::array<std::string_view, 9> valid_methods = {
+static constexpr std::array<std::string_view, 9> valid_methods =
+{
     "GET", "POST", "PUT", "DELETE", "HEAD", 
     "OPTIONS", "PATCH", "TRACE", "CONNECT"
 };
-
 
 typedef enum req_state{
     READING,
@@ -230,13 +234,13 @@ typedef enum req_state{
     DONE
 }req_state;
 
-enum read_request_status {
+enum read_req_status {
     READ_REQUEST_INCOMPLETE = 0,
     READ_REQUEST_COMPLETE = 1,
     READ_REQUEST_ERROR = -1
 };
 
-enum write_request_status {
+enum write_req_status {
     WRITE_REQUEST_INCOMPLETE = 0,
     WRITE_REQUEST_COMPLETE = 1,
     WRITE_REQUEST_ERROR = -1
@@ -247,19 +251,20 @@ typedef struct req_context
 {
     req_state           state;              // current state of the req
     int                 connfd;             // client file descriptor
-    int                 epoll_fd;             // epoll file descriptor
+    int                 epoll_fd;           // epoll file descriptor
 
     /* Reading */
     char                *read_buf;
     char                *read_ptr;
-    int                 read_cnt;
-    int                 total_read;
+    ssize_t             read_cnt;
+    size_t              total_read;
 
     /* Writing */
     FILE                *req_file;
-    int                 remaining;
+    size_t               remaining;
 }req_context;
 
+/* didnt want to make it a whole class */
 req_context *new_req_context(int connfd, int epollfd)
 {
     req_context *c = new req_context;
@@ -268,7 +273,7 @@ req_context *new_req_context(int connfd, int epollfd)
     c->connfd     = connfd;
     c->epoll_fd   = epollfd;
 
-    c->read_buf = new char[MAX_REQ];
+    c->read_buf = new char[MAX_REQUEST_SIZE];
     c->read_ptr = nullptr;
     c->read_cnt = 0;
     c->total_read = 0;
@@ -295,14 +300,16 @@ void delete_req_context(req_context *c)
 /* From W. Richard Stevens - UNIX Network Programming */
 /* Write may actually write less than expected for various reasons (interrupts, ..) */
 ssize_t                     /* Write "n" bytes to a descriptor. */
-writen(int fd, const void *vptr, size_t n)
+writen(int fd, const void *vptr, ssize_t n)
 {
+    assert(n>0);
+    
     size_t      nleft;
     ssize_t     nwritten;
     const char  *ptr;
 
     ptr = (char *)vptr;
-    nleft = n;
+    nleft = (size_t)n;
 
     // loop until all bytes are written
     while (nleft > 0) {
@@ -318,20 +325,21 @@ writen(int fd, const void *vptr, size_t n)
             }
         }
 
-        nleft -= nwritten;
+        // nwritten should be positive
+        nleft -= (size_t)nwritten;
         ptr   += nwritten;
     }
     return(n);
 }
 
 /* data is read into a buffer (read_buf) in chunks and then supplied to the caller one byte at a time */
-static ssize_t my_read(req_context *c, char *ptr)
+static ssize_t readn(req_context *c, char *ptr)
 {
     // check if the buffer still contains data
     if (c->read_cnt <= 0) {
 again:
         // all bytes are read, read more from the file
-        if ((c->read_cnt = read(c->connfd, (c->read_buf + c->total_read), MAX_REQ - c->total_read)) < 0) {
+        if ((c->read_cnt = read(c->connfd, (c->read_buf + c->total_read), MAX_REQUEST_SIZE - c->total_read)) < 0) {
             if (errno == EINTR){
                 // interrupted, try again
                 goto again;
@@ -344,8 +352,9 @@ again:
             // end-of-file
             return(0);
         }
+        // read_cnt should be positive
         c->read_ptr     = c->read_buf;
-        c->total_read  += c->read_cnt;
+        c->total_read  += (size_t)c->read_cnt;
     }
 
     // buffer still contains data, return one byte at a time using *ptr
@@ -370,9 +379,9 @@ private:
     std::string body_size;
 
     std::string date;
-    std::string extension;
+    std::string ext;
 
-    std::unordered_map<std::string_view, std::string_view> headers;
+    std::string headers;
 
 public:
     HTTPBuilder() 
@@ -384,7 +393,9 @@ public:
         body_size.reserve(16);
 
         date.reserve(64);
-        extension.reserve(16);
+        ext.reserve(16);
+
+        headers.reserve(2048);
     }
 
     HTTPBuilder& http_resp_add_status(int idx) 
@@ -405,24 +416,30 @@ public:
     {
         body_size.clear();
         body_size += std::to_string(size);
-        headers["Content-Length"] = std::string_view(body_size);
+
+        headers += "Content-Length: ";
+        headers += body_size;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_content_type(std::string_view type) 
     {
-        headers["Content-Type"] = type;
+        headers += "Content-Type: ";
+        headers += type;
+        headers += "\r\n";
         return *this;
     }
 
-    std::string http_get_content_type(std::string_view file_path) 
+    std::string_view http_get_content_type(std::string_view file_path) 
     {
-        extension.clear();
+        ext.clear();
+        // get type from extension
         auto pos = file_path.find_last_of('.');
         if (pos != std::string::npos) {
-            extension += file_path.substr(pos + 1);
+            ext += file_path.substr(pos + 1);
             // get it from the map
-            auto it = mime_types.find(extension);
+            auto it = mime_types.find(ext);
             if (it != mime_types.end()) {
                 return it->second;  
             }
@@ -432,22 +449,27 @@ public:
 
     HTTPBuilder& http_resp_add_content_encoding(std::string_view encoding) 
     {
-        headers["Content-Encoding"] = encoding;
+        headers += "Content-Encoding: ";
+        headers += encoding;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_allow(std::string_view methods) 
     {
-        headers["Allow"] = methods;
+        headers += "Allow: ";
+        headers += methods;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_authorization(std::string_view auth) 
     {
-        headers["Authorization"] = auth;
+        headers += "Authorization: ";
+        headers += auth;
+        headers += "\r\n";
         return *this;
     }
-
     /*
         Preferred as an Internet standard and represents
         a fixed-length subset of that defined by RFC 1123
@@ -460,67 +482,88 @@ public:
         if (std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", std::gmtime(&now))) 
         {
             date += buf;
-            headers["Date"] = std::string_view(date);
+            headers += "Date: ";
+            headers += std::string_view(date);
+            headers += "\r\n";
         }
         return *this;
     }
 
     HTTPBuilder& http_resp_add_expires(std::string_view expires)
     {
-        headers["Expires"] = expires;
+        headers += "Expires: ";
+        headers += expires;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_last_modified(std::string_view last_modified) 
     {
-        headers["Last-Modified"] = last_modified;
+        headers += "Last-Modified: ";
+        headers += last_modified;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_location(std::string_view location) 
     {
-        headers["Location"] = location;
+        headers += "Location: ";
+        headers += location;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_referer(std::string_view referer) 
     {
-        headers["Referer"] = referer;
+        headers += "Referer: ";
+        headers += referer;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_server(std::string_view server_name) 
     {
-        headers["Server"] = server_name;
+        headers += "Server: ";
+        headers += server_name;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_user_agent(std::string_view user_agent) 
     {
-        headers["User-Agent"] = user_agent;
+        headers += "User-Agent: ";
+        headers += user_agent;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_www_auth(std::string_view auth) 
     {
-        headers["WWW-Authenticate"] = auth;
+        headers += "WWW-Authenticate: ";
+        headers += auth;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_access_auth(std::string_view access_auth) 
     {
-        headers["Access-Control-Allow-Origin"] = access_auth;
+        headers += "Access-Control-Allow-Origin: ";
+        headers += access_auth;
+        headers += "\r\n";
         return *this;
     }
 
     HTTPBuilder& http_resp_add_custom_header(std::string_view key, std::string_view value) 
     {
-        headers[key] = value;
+        headers += key;
+        headers += ": ";
+        headers += value;
+        headers += "\r\n";
         return *this;
     }
 
     /*
-        Finally build the constructed response header
+        Finally build the constructed respnse header
     */
     std::string& build() 
     {
@@ -533,13 +576,7 @@ public:
         response += codes[status_code].reason;
         response += "\r\n";
 
-        // headers
-        for (const auto& header : headers) {
-            response += header.first;
-            response += ": ";
-            response += header.second;
-            response += "\r\n";
-        }
+        response += headers;
 
         headers.clear();
 
@@ -551,7 +588,6 @@ public:
     }
 };
 
-using namespace std::literals;
 /*
     To parse the incoming request header
 */
@@ -561,7 +597,10 @@ private:
     std::string method;
     std::string uri;
     std::string version;
-    std::unordered_map<std::string, std::string> headers;
+
+    /* Maybe do something with them later */
+    std::vector<std::pair<std::string_view, std::string_view>> headers;
+    size_t header_count = 0;
 
 public:
 
@@ -569,6 +608,8 @@ public:
         method.reserve(16);
         uri.reserve(128);
         version.reserve(16);
+
+        headers.reserve(32); 
     }
     /*
         A request message from a client to a server includes, within the
@@ -598,7 +639,6 @@ public:
         }
 
         // Extract method
-        method.clear(); 
         method += std::string(request_line.substr(0, first_space));
 
         if(!is_method_valid(method))
@@ -612,11 +652,9 @@ public:
         }
 
         // Extract URI
-        uri.clear();
         uri += std::string(request_line.substr(first_space + 1, second_space - first_space - 1));
 
         // Extract version
-        version.clear();
         version += std::string(request_line.substr(second_space + 1));
 
         if (version.substr(0, 5) != "HTTP/") {
@@ -627,16 +665,13 @@ public:
             return InternalServerError;  
         }
 
-        // Parse rest of headers
-        if (parse_headers(request.substr(end_of_line + 2))) {
-            return BadRequest;  
-        }
-
-        return OK;  
+        return parse_headers(request.substr(end_of_line + 2));  
     }
 
     StatusCode parse_headers(std::string_view headers_view) 
     {
+        header_count = 0;
+
         size_t pos = 0;
 
         while (pos < headers_view.size()) 
@@ -662,15 +697,22 @@ public:
                 continue; 
             } 
 
-            std::string header_name = std::string(line.substr(0, colon_pos));
-            std::string_view header_value_view = line.substr(colon_pos + 1);
+            std::string_view header_name = line.substr(0, colon_pos);
+            std::string_view header_value = line.substr(colon_pos + 1);
 
             // Trim whitespace from header value, handle when all header value is whitespace
-            header_value_view.remove_prefix(std::min(header_value_view.find_first_not_of(" \t"), header_value_view.size()));
-            header_value_view.remove_suffix(header_value_view.size() - header_value_view.find_last_not_of(" \t") - 1);
+            header_value.remove_prefix(
+                std::min(header_value.find_first_not_of(" \t"), header_value.size())
+            );
+            header_value.remove_suffix(
+                header_value.size() - header_value.find_last_not_of(" \t") - 1
+            );
 
-            headers[std::move(header_name)] = std::string(header_value_view);
+            headers.emplace_back(header_name,header_value);
+            header_count++;
         }
+        // no empty line found
+        return BadRequest;
     }
 
     static bool is_method_valid(std::string_view method) 
@@ -693,18 +735,17 @@ public:
         return version; 
     }
 
-    const std::unordered_map<std::string, std::string>& get_headers() const 
-    { 
-        return headers; 
+    // Get specific header value
+    std::string_view get_header(std::string_view name) const 
+    {
+        for (size_t i = 0; i < header_count; i++) {
+            if (headers[i].first == name) {
+                return headers[i].second;
+            }
+        }
+        return {};
     }
     
-    // Get specific header value
-    std::string get_header(const std::string& key) const 
-    {
-        auto it = headers.find(key);
-        return (it != headers.end()) ? it->second : "";
-    }
-
     // Clear all parsed data
     void clear() 
     {
@@ -743,11 +784,11 @@ public:
     void setup_default_routes() 
     {
         add_route("GET", "/", [this](req_context *c) -> std::string& {
-            return response_static_file(c, "./Web/index.html");
+            return response_static_file(c, "/index.html");
         });
 
         add_route("GET", "/about", [this](req_context *c) -> std::string& {
-            return response_static_file(c, "./Web/about.html");
+            return response_static_file(c, "/about.html");
         });
     }
 
@@ -759,17 +800,24 @@ public:
 
     std::string& response_static_file(req_context *c, const std::string& uri)
     {
+        size_t original_length = strlen(root_directory.c_str());
+
+        root_directory += uri;
+
         // get full path
         char abs_path[PATH_MAX];
-        if (realpath(uri.c_str(), abs_path) == NULL){
+        if (realpath(root_directory.c_str(), abs_path) == NULL){
             return build_error_response(BadRequest, "Invalid path");
         }
 
+        // Restore rootdirectory to its original state
+        root_directory.resize(original_length);
+
         std::string_view file_path = abs_path;
 
-        // Do one more check to make sure everything is fine
-        if(!file_path_check(file_path)){
-           return build_error_response(BadRequest, "Invalid path");
+        // Double check nothing is going on
+        if (file_path.substr(0, original_length) != root_directory) {
+            return build_error_response(BadRequest, "Invalid path");
         }
 
         size_t file_size;
@@ -797,9 +845,8 @@ public:
             .build();
     }
 
-    int send_response_header(req_context *c)
+    void send_response_header(req_context *c)
     {
-        int ret = 0;
         std::string response;
 
         switch(parser.parse_request(c->read_buf))
@@ -865,12 +912,12 @@ public:
 
     void write_response(req_context *c , std::string& response)
     {
-        if(writen(c->connfd, response.c_str(), response.size())<0){
+        if(writen(c->connfd, response.c_str(), (ssize_t)response.size())<0){
             std::cerr << "Error while sending the response header" << std::endl;
         }
     }
 
-    enum write_request_status send_response_file(req_context *c)
+    enum write_req_status send_response_file(req_context *c)
     {
         FILE *file = c->req_file;
 
@@ -894,8 +941,6 @@ public:
             // Reset position to beginning
             lseek(filefd, 0, SEEK_SET);
 
-            // Now try sendfile with explicit offset
-            off_t offset = 0;
             /* 
                 The sendfile() function in Linux lets you tell 
                 the kernel to send part or all of a file. 
@@ -916,7 +961,8 @@ public:
             } 
             else
             {
-                left -= writen;
+                // writen should be positive
+                left -= (size_t)writen;
             }
         }
 
@@ -926,23 +972,6 @@ public:
             c->remaining = left;
             return WRITE_REQUEST_INCOMPLETE;
         }
-    }
-
-    bool file_path_check(std::string_view file_path) 
-    {
-        size_t actual_root_length = strlen(root_directory.c_str());
-        
-        if (file_path.length() < actual_root_length) {
-            return false;
-        }
-
-        // Compare only up to the actual null-terminated length
-        for (size_t i = 0; i < actual_root_length; ++i) {
-            if (file_path[i] != root_directory[i]) {
-                return false;
-            }
-        }
-        return true;
     }
 
     std::string& build_error_response(int status, const std::string& message) 
@@ -967,6 +996,8 @@ public:
 
     FILE *get_file_info(const char* filepath, size_t &size) 
     {
+        ssize_t file_size = -1; 
+
         FILE *file = fopen(filepath, "rb");
 
         if(!file){
@@ -974,7 +1005,10 @@ public:
         }
 
         fseek(file, 0L, SEEK_END);
-        size = ftell(file);
+        if((file_size = ftell(file)) < 0){
+            std::cerr << "ftell failed ! : " << std::strerror(errno) << std::endl;
+        }
+        size = (size_t)file_size;
         fseek(file, 0L, SEEK_SET);
 
         return file;
@@ -1120,10 +1154,10 @@ void executeCommand(const std::string& command)
 
 
 /* Read HTTP request until finding double CRLF indicating end of headers */
-enum read_request_status read_http_request(req_context *c)
+enum read_req_status read_http_request(req_context *c)
 {
     char ch;
-    int  rc;
+    ssize_t  rc;
 
     enum {
         R_START = 0,
@@ -1133,7 +1167,7 @@ enum read_request_status read_http_request(req_context *c)
     } reading_stage = R_START;
 
     /* Try to read one byte at a time */
-    while ((rc = my_read(c, &ch)) == 1) 
+    while ((rc = readn(c, &ch)) == 1) 
     {
         if (c->total_read >= MAX_REQUEST_SIZE) {
             // cap it at 8k
@@ -1218,15 +1252,8 @@ void mod_fd_write(req_context *c)
 // Function to handle an incoming HTTP request
 void handleClient(req_context *c) 
 {
-    int  connfd = c->connfd;
-
-    char ch;
-    int  rc;
-
     if(c->state == READING)
     {
-        char rc;
-
         switch (read_http_request(c))
         {
             case READ_REQUEST_INCOMPLETE:
@@ -1459,7 +1486,7 @@ void handleClient(req_context *c)
 /*
     Whenever we fork children, we must wait for them to prevent them from becoming zombies.
  */
-void sigchld_handler(int s)
+void sigchld_handler(void)
 {
     // waitpid() might overwrite errno, so we save and restore it:
     int saved_errno = errno;
@@ -1493,84 +1520,6 @@ void signalHandler(int signum)
 
     exit(signum);
 }
-
-#if 0
-int new_socket(const char *ip, const char *port)
-{
-    struct addrinfo hints, *res, *p;
-    int listenfd;
-    int yes=1;
-
-    memset(&hints, 0, sizeof(hints));     // Make sure its clean
-    hints.ai_family   = AF_UNSPEC;        // use IPv4 or IPv6
-    hints.ai_socktype = SOCK_STREAM;      // TCP
-    hints.ai_flags    = AI_PASSIVE;       // (wildcard IP address bind)
-
-    /* Make it protocol independent */
-    int err = 0;
-    if ((err = getaddrinfo(ip, port, &hints, &res)) != 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(err));
-        exit(1);
-    }
-
-    /*
-        the linked list may have more than one addrinfo structure
-        the application should try using the addresses in the order
-        in which they are returned until we successfully bind
-    */
-    for(p = res; p != NULL; p = p->ai_next) 
-    {
-        // Create a TCP/IP stream socket
-        if ((listenfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) < 0) {
-            std::cerr << "Socket creation failed" << std::endl;
-            continue;
-        }
-
-        // Non-blocking Mode
-        int flags = fcntl(listenfd, F_GETFL, 0);
-        fcntl(listenfd, F_SETFL, flags|O_NONBLOCK);
-
-        // Prevent the "Address already in use" error message
-        if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
-            std::cerr << "setsockopt error" << std::endl;
-            exit(1);
-        }
-
-        // bind the port to the socket
-        if (bind(listenfd, res->ai_addr, res->ai_addrlen) == -1) {
-            close(listenfd);
-            std::cerr << "Binding error" << std::endl;
-            continue;
-        }
-        break;
-    }    
-
-    // didnt bind
-    if(p == NULL){
-        fprintf(stderr,"server: failed to bind\n");
-        return -1;
-    }
-
-    /* Convert socket to listening socket */
-    if (listen(listenfd, BACKLOG) < 0) {
-        std::cerr << "Listen failed" << std::endl;
-        return -1;
-    }
-
-    char ipstr[INET_ADDRSTRLEN];
-    struct sockaddr_in *ipv4 = (struct sockaddr_in *)res->ai_addr;
-    inet_ntop(AF_INET, &(ipv4->sin_addr), ipstr, sizeof(ipstr));
-
-    freeaddrinfo(res);  // not needed anymore
-    
-    char name[1024];
-    gethostname(name, 1024);
-
-    std::cout << "Server listening on " << name <<  " http://" << ipstr << ':' << PORT << std::endl;
-
-    return listenfd;
-}
-#endif 
 
 
 class ServerException : public std::runtime_error {
@@ -1874,7 +1823,7 @@ struct EventPoll
 
     EventPoll(const char* port,  std::function<void(req_context*)> client_handler) : EventPoll(NULL,port,client_handler){}
 
-    void register_fd(int fd, int event_flags)
+    void register_fd(int fd, uint32_t event_flags)
     {
         struct epoll_event ev;
         ev.events = event_flags;
@@ -1887,10 +1836,10 @@ struct EventPoll
         }
     }
 
-    int register_fd_ctx(req_context *c, int event_flags)
+    int register_fd_ctx(req_context *c, uint32_t event_flags)
     {
         struct epoll_event ev;
-        ev.events = (EPOLLIN | EPOLLET | EPOLLONESHOT);
+        ev.events = event_flags;
         ev.data.ptr = c;
 
         // registering interest in a particular file descriptor
