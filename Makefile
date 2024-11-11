@@ -3,7 +3,7 @@ EXT=cpp
 
 OPT=-O0
 DBG=-g
-WARNINGS=-Wall -Wextra -Wsign-conversion -Wconversion
+WARNINGS=-Wall -Wextra -Wsign-conversion -Wconversion -fsanitize=address -fsanitize=undefined
 DEPFLAGS=-MP -MD
 
 INCS=$(foreach DIR,$(INC_DIRS),-I$(DIR))

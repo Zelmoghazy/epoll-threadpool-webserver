@@ -338,7 +338,7 @@ static ssize_t readn(req_context *c, char *ptr)
     // check if the buffer still contains data
     if (c->read_cnt <= 0) {
 again:
-        // all bytes are read, read more from the file
+        // read as much as you can
         if ((c->read_cnt = read(c->connfd, (c->read_buf + c->total_read), MAX_REQUEST_SIZE - c->total_read)) < 0) {
             if (errno == EINTR){
                 // interrupted, try again
@@ -769,6 +769,8 @@ class HTTPServer
 public:
     HTTPServer(std::string root_dir = "./Web")
     {
+        root_directory.reserve(PATH_MAX);
+
         char absolute_path[PATH_MAX]; 
 
         // verify absolute path of root directory
@@ -777,7 +779,8 @@ public:
             exit(1);
         }
 
-        root_directory.assign(absolute_path, PATH_MAX);
+        root_directory+=absolute_path;
+
         setup_default_routes();
     }
 
@@ -800,9 +803,11 @@ public:
 
     std::string& response_static_file(req_context *c, const std::string& uri)
     {
-        size_t original_length = strlen(root_directory.c_str());
+        size_t original_length = root_directory.size();
 
         root_directory += uri;
+
+        std::cout << root_directory << std::endl;
 
         // get full path
         char abs_path[PATH_MAX];
@@ -810,7 +815,7 @@ public:
             return build_error_response(BadRequest, "Invalid path");
         }
 
-        // Restore rootdirectory to its original state
+        // Restore rootdirectory to its original size
         root_directory.resize(original_length);
 
         std::string_view file_path = abs_path;
@@ -952,6 +957,7 @@ public:
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     break;
                 } else {
+                    std::cerr << "erro sending file:" <<  std::strerror(errno) << std::endl;
                     return WRITE_REQUEST_ERROR;
                 }
             } 
@@ -1151,8 +1157,6 @@ void executeCommand(const std::string& command)
     }
 }
 
-
-
 /* Read HTTP request until finding double CRLF indicating end of headers */
 enum read_req_status read_http_request(req_context *c)
 {
@@ -1166,11 +1170,12 @@ enum read_req_status read_http_request(req_context *c)
         R_GOT_CRLFCR
     } reading_stage = R_START;
 
-    /* Try to read one byte at a time */
+    /* Try to read one byte at a time until we detect the end */
     while ((rc = readn(c, &ch)) == 1) 
     {
-        if (c->total_read >= MAX_REQUEST_SIZE) {
-            // cap it at 8k
+        if (c->total_read >= MAX_REQUEST_SIZE) 
+        {
+            std::cerr << "Exceeded Maximum request size ! :" << std::endl;
             return READ_REQUEST_ERROR;
         }
 
@@ -1206,8 +1211,14 @@ enum read_req_status read_http_request(req_context *c)
         }
     }
 
-    /* Handle read errors */
-    if (rc < 0) 
+    /* EOF before complete request */
+    if (rc == 0) 
+    {
+        /* Real error occurred */
+        std::cerr << "EOF received, client may have disconnected : " << std::strerror(errno) << std::endl;
+        return READ_REQUEST_ERROR;
+    }
+    else
     {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             /* Not ready to read, return incomplete */
@@ -1216,15 +1227,6 @@ enum read_req_status read_http_request(req_context *c)
         /* Real error occurred */
         std::cerr << "Error occurred while reading : " << std::strerror(errno) << std::endl;
     }
-
-    /* EOF before complete request */
-    if (rc == 0) 
-    {
-       /* Real error occurred */
-        std::cerr << "EOF received, client may have disconnected : " << std::strerror(errno) << std::endl;
-        return READ_REQUEST_COMPLETE;
-    }
-
     /* Need more data */
     return READ_REQUEST_INCOMPLETE;
 }
@@ -1498,16 +1500,6 @@ void sigchld_handler(void)
     errno = saved_errno;
 }
 
-void *get_in_addr(struct sockaddr *sa)
-{
-    if (sa->sa_family == AF_INET) {
-        return &(((struct sockaddr_in*)sa)->sin_addr);
-    }
-    return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
-
-
-
 void signalHandler(int signum) 
 {
     std::cout << "\nInterrupt signal (" << signum << ") received.\n";
@@ -1520,7 +1512,6 @@ void signalHandler(int signum)
 
     exit(signum);
 }
-
 
 class ServerException : public std::runtime_error {
 public:
@@ -1903,6 +1894,7 @@ struct EventPoll
                     // interrupted by a signal, try again
                     continue;
                 }
+                // actual error
                 throw ServerException(std::string("epoll_wait error : ") +  std::strerror(errno));
             }
 
@@ -1927,7 +1919,10 @@ struct EventPoll
     {
         for(;;)
         {
-            /*  A new descriptor is returned by accept for each client that connects to the server. */
+            /*
+                A new descriptor is returned by accept 
+                for each client that connects to the server. 
+            */
             int connfd = socket.accept_connection();
             if(connfd < 0){
                 return;
@@ -1975,6 +1970,7 @@ struct EventPoll
         return &(((struct sockaddr_in6*)sa)->sin6_addr);
     }
 };
+
 
 int main(void) 
 {

@@ -69,7 +69,7 @@ class HTTPServerTester:
             print(f"  ✗ Connection failed: {str(e)}")
         print("\n")
 
-    def _test_response_times(self, samples: int = 1000):
+    def _test_response_times(self, samples: int = 10000):
         """Test response times with multiple samples"""
         print("2. Response Time Analysis:")
         times = []
@@ -92,7 +92,7 @@ class HTTPServerTester:
             print(f"  ✓ Max: {max(times):.2f}ms")
         print("\n")
 
-    def _test_concurrent_load(self, concurrent_requests: int = 1000):
+    def _test_concurrent_load(self, concurrent_requests: int = 10000):
         """Test server under concurrent load"""
         print("3. Concurrent Load Test:")
         results = []
@@ -216,6 +216,6 @@ class HTTPServerTester:
             print("Unable to make final recommendations due to connection issues")
 
 if __name__ == "__main__":
-    server_url = "http://172.30.46.232:8080"
+    server_url = "http://192.168.1.7:8080"
     tester = HTTPServerTester(server_url)
     tester.run_comprehensive_test()
