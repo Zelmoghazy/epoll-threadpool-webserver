@@ -1,0 +1,41 @@
+{
+	"categories":	{
+		"Applications":	{
+			"subcategories":	{
+				"Editors":	{
+					"items":	["gedit", "vim"]
+				},
+				"Utils":	{
+					"items":	["Files", "Calculator"]
+				}
+			}
+		},
+		"Websites":	{
+			"subcategories":	{
+				"Media":	{
+					"items":	["Youtube", "Twitch"]
+				},
+				"Social":	{
+					"items":	["Linkedin", "Facebook", "Whatsapp"]
+				}
+			}
+		},
+		"Development":	{
+			"subcategories":	{
+				"Software":	{
+					"items":	["Terminal", "VSCode"]
+				}
+			}
+		},
+		"System":	{
+			"subcategories":	{
+				"Monitoring":	{
+					"items":	["btop", "htop"]
+				},
+				"Wi-fi":	{
+					"items":	["scan", "saved", "show_pass"]
+				}
+			}
+		}
+	}
+}

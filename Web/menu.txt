@@ -4,6 +4,7 @@
         - vim:terminator -e 'vim; exec bash' > /dev/null 2>&1 &
     ## Utils
         - Files:nautilus > /dev/null 2>&1 &
+        - Calculator:gnome-calculator > /dev/null 2>&1 &
 # Websites
     ## Media
         - Youtube:xdg-open https://www.youtube.com > /dev/null 2>&1 &

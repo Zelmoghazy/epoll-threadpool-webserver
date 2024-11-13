@@ -1,9 +1,9 @@
 CC=g++
 EXT=cpp
 
-OPT=-O0
-DBG=-g
-WARNINGS=-Wall -Wextra -Wsign-conversion -Wconversion -fsanitize=address -fsanitize=undefined
+OPT=
+DBG=
+WARNINGS=-Wall -Wextra -Wsign-conversion -Wconversion
 DEPFLAGS=-MP -MD
 
 INCS=$(foreach DIR,$(INC_DIRS),-I$(DIR))
@@ -30,12 +30,17 @@ all: $(BUILD_DIR)/$(EXEC)
 	@echo "              BUILD SUCCESS              "
 	@echo "========================================="
 
-release: OPT += -O2 
+release: OPT += -O2
 release: all
 
 debug: DBG += -g -gdwarf-2
 debug: OPT += -O0
 debug: all
+
+profile: DBG += -g -gdwarf-2
+profile: OPT += -O2
+profile: CFLAGS += -DNDEBUG -fno-inline-functions -fno-inline-functions-called-once -fno-optimize-sibling-calls -fno-default-inline -fno-inline -pg
+profile: all
 
 $(BUILD_DIR)/%.o: %.$(EXT) | $(BUILD_DIR)
 	$(CC) -c  $< -o $@ $(CFLAGS)

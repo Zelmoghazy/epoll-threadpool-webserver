@@ -36,17 +36,17 @@ public:
     void save_to_file(const std::string& filename) const;
 };
 
-
-
 class Parser {
 private:
     JsonBuilder builder;
+    std::string response;
 
     std::string trim(const std::string& str);
     std::string parse_cat(const std::string& line);
     std::string extract_command_name(const std::string& line, std::unordered_map<std::string, std::string>& buttons);
 public:
+    Parser();
     void parse_file(const std::string& filename, std::unordered_map<std::string, std::string>& buttons);
     void save_json(const std::string& filename);
-    std::string get_json() const;
+    std::string& get_json();
 };

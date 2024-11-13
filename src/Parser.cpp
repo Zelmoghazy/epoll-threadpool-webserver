@@ -73,6 +73,10 @@ void JsonBuilder::save_to_file(const std::string& filename) const
 
 const std::string JsonBuilder::default_sub = "General";
 
+Parser::Parser()
+{
+    this->response.reserve(2024);
+}
 /* Return line without beginning or end whitespace */
 std::string Parser::trim(const std::string& str) 
 {
@@ -115,14 +119,16 @@ std::string Parser::extract_command_name(const std::string& line, std::unordered
     return trim(line.substr(start));
 }
 
-void Parser::parse_file(const std::string& filename, std::unordered_map<std::string, std::string>& buttons) {
+void Parser::parse_file(const std::string& filename, std::unordered_map<std::string, std::string>& buttons) 
+{
     std::ifstream file(filename);
     if (!file.is_open()) {
         throw std::runtime_error("Could not open file: " + filename);
     }
 
     std::string line;
-    while (std::getline(file, line)) {
+    while (std::getline(file, line)) 
+    {
         line = trim(line);
 
         if (line.empty()){
@@ -140,12 +146,17 @@ void Parser::parse_file(const std::string& filename, std::unordered_map<std::str
             builder.add_item(extract_command_name(line, buttons));
         }
     }
+    response.clear();
+    response += builder.get_json_string();    
 }
 
-void Parser::save_json(const std::string& filename) {
+void Parser::save_json(const std::string& filename) 
+{
     builder.save_to_file(filename);
 }
 
-std::string Parser::get_json() const {
-    return builder.get_json_string();
+std::string& Parser::get_json() 
+{
+    return response;
 }
+
