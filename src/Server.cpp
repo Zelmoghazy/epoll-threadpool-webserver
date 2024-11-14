@@ -78,6 +78,8 @@ void EventPoll::mod_fd_read(int fd)
     }
 }
 
+
+
 void EventPoll::mod_fd_write(int fd)
 {
     struct epoll_event ev;
@@ -86,6 +88,26 @@ void EventPoll::mod_fd_write(int fd)
     if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
         std::cerr << "Failed to remove fd from epoll" << std::endl;
         exit(1);
+    }
+}
+
+void EventPoll::mod_fd_read_ctx(req_context *c)
+{
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+    ev.data.ptr = c;
+    if (epoll_ctl(c->epoll_fd, EPOLL_CTL_MOD, c->connfd, &ev) == -1) {
+        std::cerr << "Failed to remove fd from epoll" << std::endl;
+    }
+}
+
+void EventPoll::mod_fd_write_ctx(req_context *c)
+{
+    struct epoll_event ev;
+    ev.events = EPOLLOUT | EPOLLET | EPOLLONESHOT;
+    ev.data.ptr = c;
+    if (epoll_ctl(c->epoll_fd, EPOLL_CTL_MOD, c->connfd, &ev) == -1) {
+        std::cerr << "Failed to remove fd from epoll" << std::endl;
     }
 }
 
@@ -127,6 +149,7 @@ void EventPoll::event_loop()
 
 void EventPoll::handle_new_connections() 
 {
+    // call accept as many times as we can
     for(;;)
     {
         /*

@@ -182,3 +182,30 @@ Thus, a process is only armed with incomplete data as it tries to perform any su
 epoll stands for event poll and is a Linux specific construct. It allows for a process to monitor multiple file descriptors and get notifications when I/O is possible on them. It allows for both edge-triggered as well as level-triggered notifications.
 
 By default, epoll provides level-triggered notifications. Every call to epoll_wait only returns the subset of file descriptors belonging to the interest list that are ready.
+
+---
+* By default, all file descriptors on Unix systems start out in "blocking mode".
+    * For instance, if you try to read from a TCP socket then the read call will block until the other side of the connection actually sends data.
+* Blocking is a problem for programs that does more than one task at the same time, since blocked processes are suspended.
+
+A file descriptor is put into "nonblocking mode" by adding O_NONBLOCK to the set of fcntl flags on the file descriptor:
+
+non blocking io on its own has a lot of drawbacks
+    - waste alot of cpu cycles attempting to read or write
+    * hard to manage for alot of ile descriptors
+
+I/O Multiplexing
+*  let the kernel know what events (typically read events and write events) are of interest on a set of file descriptors, and then they block until something of interest happens.
+- so you block in a single point in your application, whenever anyything happens you wake up handle it and continue waiting
+
+in the epoll system call. This system call has two modes: level-triggered polling, and edge-triggered polling.
+
+Suppose you tell the kernel you're interested in using epoll to monitor read events on some file descriptor. The kernel maintains a list of these interests for each file descriptor. When data comes in on the file descriptor the kernel traverses the interests list and wakes up each process that was blocked in epoll_wait with that file descriptor in the event list.
+
+What I outlined above happens regardless of what triggering mode epoll is in. The difference between level-triggered and edge-triggered polling is what happens in the kernel when you call epoll_wait. In level-triggered mode the kernel will traverse each file descriptor in the interest list to see if it already matches the interest condition. For instance, if you registered a read event on file descriptor 8, when calling epoll_wait the kernel will first check: does file descriptor 8 already have data ready for reading? If any of the file descriptors match the interest then epoll_wait can return without blocking.
+
+By contrast, in edge-triggered mode the kernel skips this check and immediately puts the process to sleep when it calls epoll_wait. This puts all of the responsibility on you, the programmer, to do the Right Thing and fully read and write all data for each file descriptor before waiting on this.
+
+This edge-triggered mode is what makes epoll an O(1) I/O multiplexer: the epoll_wait call will suspend immediately, and since a list is maintained for each file descriptor ahead of time, when new data comes in the kernel immediately knows what processes must be woken up in O(1) time.
+
+To use edge-triggered polling you must put the file descriptors into nonblocking mode. Then you must call read or write until they return EWOULDBLOCK every time. 

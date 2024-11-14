@@ -1,8 +1,4 @@
-#include <iostream>
-
 #include <Utils.h>
-#include "cJSON.h"
-
 
 /* ----------------------- UTILS---------------------------------*/
 std::string read_entire_file(const std::string& filePath)
@@ -94,4 +90,41 @@ void deserializeMap(std::unordered_map<std::string, std::string>& map, const std
     }
 
     file.close();
+}
+
+void executeCommand(const std::string& command)
+{
+    // will handle piping output later
+    pid_t pid = fork();
+    
+    if (pid < 0) {
+        std::cerr << "Fork failed: " << std::strerror(errno) << std::endl;
+        return;
+    }
+    else if (pid == 0) 
+    {  
+        while(1);
+        execl("/bin/sh", "sh", "-c", command.c_str(), (char*)nullptr);
+        
+        // If execl fails
+        std::cerr << "Failed to execute: " << std::strerror(errno) << std::endl;
+        exit(1);
+    }
+    else
+    {
+        // Parent process
+        int status;
+        pid_t result = waitpid(pid, &status, 0);
+
+        if (result == -1) {
+            std::cerr << "waitpid failed" << std::endl;
+            return;
+        }
+
+        if (WIFEXITED(status)) {
+            std::cout << "Child process exited with status: " << WEXITSTATUS(status) << std::endl;
+        } else if (WIFSIGNALED(status)) {
+            std::cout << "Child process terminated by signal: " << WTERMSIG(status) << std::endl;
+        }
+    }
 }

@@ -199,8 +199,12 @@ std::string Socket::get_ip_addr(struct sockaddr *sa)
 
 void Socket::set_non_blocking(int fd)
 {
-    // file control : set socket for nonblocking I/O
-    // beware not to clear all the other file status flags. 
+    /* 
+        - file control : set socket for nonblocking I/O
+          beware not to clear all the other file status flags.  
+        - I/O system calls that would block now will return -1
+          and errno will be set to EWOULDBLOCK or EAGAIN
+    */
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags|O_NONBLOCK);
 }

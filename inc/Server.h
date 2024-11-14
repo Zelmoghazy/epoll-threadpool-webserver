@@ -38,8 +38,9 @@ struct EventPoll
     void rm_fd(int fd);
     void mod_fd_read(int fd);
     void mod_fd_write(int fd);
+    static void mod_fd_read_ctx(req_context *c);
+    static void mod_fd_write_ctx(req_context *c);
     void event_loop();
     void handle_new_connections();
     void handle_client_data(void* data);
-
 };

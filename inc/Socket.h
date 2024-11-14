@@ -18,7 +18,7 @@
 struct Socket
 {
     int sockfd;
-    static constexpr int BACKLOG = 10; // how many pending connections queue will hold
+    static constexpr int BACKLOG = SOMAXCONN; // how many pending connections queue will hold
 
     std::string port;
 
