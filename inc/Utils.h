@@ -1,10 +1,13 @@
 #pragma once
 
 #include <string>
+#include <cerrno>
+#include <cstring>
 #include <unordered_map>
 #include <fstream> 
 #include <iostream>
 #include <unistd.h>
+#include <sys/wait.h>
 #include "cJSON.h"
 
 std::string read_entire_file(const std::string& filePath);

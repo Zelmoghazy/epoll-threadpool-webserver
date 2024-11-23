@@ -2,8 +2,16 @@
 
 std::unordered_map<std::string, std::string> buttons;
 
+/* 
+    - The Status-Code element is a 3-digit integer result code 
+      of the attempt to understand and satisfy the request. 
+    - The Reason-Phrase is intended to give a short textual 
+      description of the Status-Code.
+ */
 status_code_t codes[] = 
 {
+    /*  1xx: Informational - Not used, but reserved for future use */
+
     /*  2xx: Success - The action was successfully received, understood, and accepted. */
     {200, "OK"},
     {201, "Created"},
@@ -28,7 +36,10 @@ status_code_t codes[] =
     {503, "Service Unavailable"},
 };
 
-// https://www.iana.org/assignments/media-types/media-types.xhtml#example
+/*
+    media-type = type "/" subtype *( ";" parameter )
+    https://www.iana.org/assignments/media-types/media-types.xhtml#example
+*/
 const std::unordered_map<std::string, std::string> mime_types = 
 {
     {"json", "application/json"},
@@ -51,14 +62,29 @@ const std::unordered_map<std::string, std::string> mime_types =
     {"mp4", "video/mp4"},
 };
 
-/* Valid HTTP Methods */
+/* 
+    Valid HTTP Methods
+    HTTP/1.0 : {GET, HEAD, POST}
+
+    - The GET method means retrieve whatever information (in the form of an
+      entity) is identified by the Request-URI
+
+    - The HEAD method is identical to GET except that the server must not
+      return any Entity-Body in the response. The metainformation contained
+      in the HTTP headers in response to a HEAD request should be identical
+      to the information sent in response to a GET request.
+    - All responses to the HEAD request method must not include a
+      body, even though the presence of entity header fields may lead one
+      to believe they do.
+    - The POST method is used to request that the destination server accept
+      the entity enclosed in the request as a new subordinate of the
+      resource identified by the Request-URI in the Request-Line.
+*/
 constexpr std::array<std::string_view, 9> valid_methods =
 {
     "GET", "POST", "PUT", "DELETE", "HEAD", 
     "OPTIONS", "PATCH", "TRACE", "CONNECT"
 };
-
-
 
 /* didnt want to make it a whole class */
 req_context *new_req_context(int connfd, int epollfd)
@@ -94,9 +120,12 @@ void delete_req_context(req_context *c)
 }
 
 
-/* From W. Richard Stevens - UNIX Network Programming */
-/* Write may actually write less than expected for various reasons (interrupts, ..) */
-ssize_t writen(int fd, const void *vptr, ssize_t n)  /* Write "n" bytes to a descriptor. */
+/*
+  From W. Richard Stevens - UNIX Network Programming 
+  Attempts to Write "n" bytes to a descriptor. 
+  Write may actually write less than expected for various reasons (interrupts, ..) 
+*/
+ssize_t writen(int fd, const void *vptr, ssize_t n)  
 {
     assert(n>0);
     
@@ -128,7 +157,10 @@ ssize_t writen(int fd, const void *vptr, ssize_t n)  /* Write "n" bytes to a des
     return(n);
 }
 
-/* data is read into a buffer (read_buf) in chunks and then supplied to the caller one byte at a time */
+/* 
+    data is read into a buffer (read_buf) in chunks
+    and then supplied to the caller one byte at a time 
+*/
 ssize_t readn(req_context *c, char *ptr)
 {
     // check if the buffer still contains data
@@ -202,6 +234,13 @@ HTTPBuilder& HTTPBuilder::http_resp_add_content_body(std::string_view content)
     return *this;
 }
 
+/* 
+    - HTTP/1.0 requests containing an entity body 
+      must include a valid Content-Length header field.
+
+    - If a request contains an entity body and Content-Length 
+      is not specified, the server should send a 400 (bad request) response
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_content_length(size_t size) 
 {
     body_size.clear();
@@ -213,6 +252,16 @@ HTTPBuilder& HTTPBuilder::http_resp_add_content_length(size_t size)
     return *this;
 }
 
+/* 
+    - When an Entity-Body is included with a message, the data type of that
+      body is determined via the header field Content-Type.
+
+    - Any HTTP/1.0 message containing an entity body should include a
+      Content-Type header field defining the media type of that body.
+
+    - HTTP uses Internet Media Types in the Content-Type header field
+      in order to provide open and extensible data typing.
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_content_type(std::string_view type) 
 {
     headers += "Content-Type: ";
@@ -221,6 +270,12 @@ HTTPBuilder& HTTPBuilder::http_resp_add_content_type(std::string_view type)
     return *this;
 }
 
+/* 
+    - Get the content type from file extension
+
+    - If the media type remains unknown, the recipient should
+      treat it as type "application/octet-stream".
+ */
 std::string_view HTTPBuilder::http_get_content_type(std::string_view file_path) 
 {
     ext.clear();
@@ -237,6 +292,19 @@ std::string_view HTTPBuilder::http_get_content_type(std::string_view file_path)
     return "application/octet-stream";
 }
 
+/*
+    - Content coding values are used to indicate an encoding transformation
+      that has been applied to a resource. Content codings are primarily
+      used to allow a document to be compressed or encrypted without losing
+      the identity of its underlying media type. Typically, the resource is
+      stored in this encoding and only decoded before rendering or
+      analogous usage.
+
+    - what is more important is that it indicates what decoding 
+      mechanism will be required to remove the encoding. 
+
+    - The default for the content encoding is none
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_content_encoding(std::string_view encoding) 
 {
     headers += "Content-Encoding: ";
@@ -343,6 +411,13 @@ HTTPBuilder& HTTPBuilder::http_resp_add_access_auth(std::string_view access_auth
     return *this;
 }
 
+/*
+    Each header field consists of a name followed immediately
+    by a colon (":"), a single space (SP) character,
+    and the field value.
+
+    HTTP-header = field-name ":" [ field-value ] CRLF
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_custom_header(std::string_view key, std::string_view value) 
 {
     headers += key;
@@ -353,22 +428,35 @@ HTTPBuilder& HTTPBuilder::http_resp_add_custom_header(std::string_view key, std:
 }
 
 /*
-    Finally build the constructed respnse header"
+    - Finally build the constructed response header
+
+    Full-Response = Status-Line 
+                    *( General-Header | Response-Header | Entity-Header ) 
+                    CRLF
+                    [ Entity-Body ] 
+
+    - The order in which header fields are received is not significant.
 */
 std::string& HTTPBuilder::build() 
 {
     response.clear();
 
-    // status line
+    // Status-Line = HTTP-Version SP Status-Code SP Reason-Phrase CRLF
     response += "HTTP/1.0 ";
     response += std::to_string(codes[status_code].code);
     response += " ";
     response += codes[status_code].reason;
     response += "\r\n";
 
+    /*
+        - General-Header = Date | Pragma
+        - Response-Header = Location | Server | WWW-Authenticate
+        - Entity-Header = Allow | Content-Encoding | Content-Length | Content-Type 
+                        | Expires | Last-Modified | extension-header
+    */
     response += headers;
-
     headers.clear();
+
 
     // Append body if available (when dynamic response is required i.e not serving a static file)
     response += "\r\n";
@@ -377,6 +465,14 @@ std::string& HTTPBuilder::build()
     return response;
 }
 
+void HTTPBuilder::clear()
+{
+    body.clear();
+    body_size.clear();
+
+    date.clear();
+    headers.clear();
+}
 
 /* 
     
@@ -389,12 +485,15 @@ std::string& HTTPBuilder::build()
                                                                                       
  */
 
-HTTPParser::HTTPParser(){
+HTTPParser::HTTPParser()
+{
     method.reserve(16);
-    uri.reserve(128);
+    uri.reserve(128); 
     version.reserve(16);
 
     headers.reserve(32); 
+
+    body.reserve(2048);
 }
 /*
     A request message from a client to a server includes, within the
@@ -402,7 +501,15 @@ HTTPParser::HTTPParser(){
         1- the method to be applied to the resource
         2- the identifier of the resource
         3- the protocol version in use.
-    */
+
+    Full-Request = Request-Line
+                   *( General-Header | Request-Header | Entity-Header )
+                   CRLF
+                   [ Entity-Body ] 
+    
+    Request-Line = Method SP Request-URI SP HTTP-Version CRLF
+    Method = "GET" | "HEAD" | "POST" 
+*/
 StatusCode HTTPParser::parse_request(const char* req) 
 {
     // clear first
@@ -436,7 +543,7 @@ StatusCode HTTPParser::parse_request(const char* req)
         return BadRequest; 
     }
 
-    // Extract URI
+    // Extract URI : identifies the resource upon which to apply the request.
     uri += std::string(request_line.substr(first_space + 1, second_space - first_space - 1));
 
     // Extract version
@@ -450,13 +557,27 @@ StatusCode HTTPParser::parse_request(const char* req)
         return InternalServerError;  
     }
 
-    return parse_headers(request.substr(end_of_line + 2));  
+    size_t headers_end = 0;
+
+    StatusCode headers_status = parse_headers(request.substr(end_of_line + 2), headers_end);  
+    if(headers_status != OK){
+        return headers_status;
+    }
+
+    // Parse the body if its a POST
+    if(method == "POST"){
+        return parse_body(request, end_of_line + 2 + headers_end);
+    }
+
+    return OK;
 }
 
-StatusCode HTTPParser::parse_headers(std::string_view headers_view) 
+/* 
+    Request-Header = Authorization | From | If-Modified-Since | Referer | User-Agent
+ */
+StatusCode HTTPParser::parse_headers(std::string_view headers_view, size_t& headers_end) 
 {
     header_count = 0;
-
     size_t pos = 0;
 
     while (pos < headers_view.size()) 
@@ -473,6 +594,7 @@ StatusCode HTTPParser::parse_headers(std::string_view headers_view)
 
         if (line.empty()) {
             // we are done
+            headers_end = pos + 2;
             return OK; 
         }
 
@@ -500,6 +622,33 @@ StatusCode HTTPParser::parse_headers(std::string_view headers_view)
     return BadRequest;
 }
 
+StatusCode HTTPParser::parse_body(std::string_view body_view, size_t body_start) 
+{
+    std::string_view content_length = get_header("Content-Length");
+    if(content_length.empty())
+    {
+        return BadRequest;
+    }
+
+    /* Get length from string_view */
+    unsigned long long length;
+    auto [ptr, err] = std::from_chars(content_length.data(), content_length.data() + content_length.size(), length);
+    if (err == std::errc{} && ptr != content_length.data() + content_length.size()) {
+        std::cerr << "Content Length conversion failed " << std::endl;
+    }
+
+    // Check given content length aligns with received data
+    if(body_view.length() < body_start + length)
+    {
+        return BadRequest;
+    }
+
+    // add the body
+    body += body_view.substr(body_start, length);
+
+    return OK;
+}
+
 bool HTTPParser::is_method_valid(std::string_view method) 
 {
     return std::find(valid_methods.begin(), valid_methods.end(), method) != valid_methods.end();
@@ -519,6 +668,11 @@ const std::string& HTTPParser::get_version() const
 {
     return version; 
 }
+const std::string& HTTPParser::get_body() const 
+{
+   return body; 
+}
+
 
 // Get specific header value
 std::string_view HTTPParser::get_header(std::string_view name) const 
@@ -538,6 +692,7 @@ void HTTPParser::clear()
     uri.clear();
     version.clear();
     headers.clear();
+    body.clear();
 }
 
 /* 
@@ -556,7 +711,10 @@ HTTPServer::HTTPServer(std::string root_dir)
 
     char absolute_path[PATH_MAX]; 
 
-    // verify absolute path of root directory
+    /*
+        verify absolute path of root directory
+        resources are identified relative to this root directory
+    */ 
     if(!realpath(root_dir.c_str(), absolute_path)){
         std::cerr << "root path error:" <<  std::strerror(errno) << std::endl;
         exit(1);
@@ -587,40 +745,33 @@ void HTTPServer::setup_default_routes()
         json_parser.save_json("./Web/data.json");
         return response_static_file(c, "/data.json");
     });
-}
 
-
-/*    
-     // Handle POST /action
-    else if (request_line.find("POST /action HTTP/1.1") != std::string::npos) 
-    {
-        std::string body = request.substr(request.find("\r\n\r\n") + 4);
-        cJSON *json = cJSON_Parse(body.c_str());
+    add_route("POST", "/action", [this](req_context *c) -> std::string& {
+        cJSON *json = cJSON_Parse(parser.get_body().c_str());
 
         if (json) 
         {
             cJSON *actionItem = cJSON_GetObjectItem(json, "action");
             if (actionItem) {
                 std::string action = actionItem->valuestring;
-                
                 // Log the action for debugging
                 std::cout << "Action received: " << action << std::endl;
 
-                // executeCommand(action);  // Replace this with any other application
+                // executeCommand(buttons[action]);  
+                
+                //  Response header
 
-                // Respond to the client
-                std::string httpResponse = "HTTP/1.1 200 OK\r\n";
-                httpResponse += "Access-Control-Allow-Origin: *\r\n";
-                httpResponse += "Content-Length: 0\r\n";
-                httpResponse += "Connection: close\r\n\r\n";
-                send(client_sock, httpResponse.c_str(), httpResponse.size(), 0);
-
-                executeCommand(buttons[action]);  
             }
             cJSON_Delete(json);
         }
-    } 
-*/
+        builder.clear();
+        return builder
+        .http_resp_add_status(OK)
+        .http_resp_add_access_auth("*")
+        .http_resp_add_custom_header("Connecton", "close")
+        .build();
+    });
+}
 
 
 void HTTPServer::add_route(const std::string& method, const std::string& path, RequestHandler handler) 
@@ -634,16 +785,18 @@ std::string& HTTPServer::response_static_file(req_context *c, const std::string&
 
     root_directory += uri;
 
-    std::cout << root_directory << std::endl;
+    // std::cout << root_directory << std::endl;
 
     // get full path
     char abs_path[PATH_MAX];
-    if (realpath(root_directory.c_str(), abs_path) == NULL){
-        return build_error_response(BadRequest, "Invalid path");
-    }
+    char *res = realpath(root_directory.c_str(), abs_path);
 
     // Restore rootdirectory to its original size
     root_directory.resize(original_length);
+
+    if (res == NULL){
+        return build_error_response(BadRequest, "Invalid path");
+    }
 
     std::string_view file_path = abs_path;
 
@@ -665,7 +818,6 @@ std::string& HTTPServer::response_static_file(req_context *c, const std::string&
     return build_success_response(OK, file_path, file_size);
 }
 
-
 std::string_view HTTPServer::response_body(int status, const std::string& message)
 {
     return builder
@@ -679,7 +831,10 @@ std::string_view HTTPServer::response_body(int status, const std::string& messag
 
 void HTTPServer::send_response_header(req_context *c)
 {
-    std::string response;
+    /* 
+        regular references can only be bound once
+     */
+    std::reference_wrapper<std::string> response = build_error_response(InternalServerError, "Internal Server Error");
 
     switch(parser.parse_request(c->read_buf))
     {
@@ -702,7 +857,7 @@ void HTTPServer::send_response_header(req_context *c)
             }
 
             if (route_handlers.find(method) == route_handlers.end()) {
-                response = build_error_response(BadRequest, "Method not allowed");
+                response = build_error_response(NotImplemented, "Method not allowed on resource.");
                 break;
             }
 
@@ -715,8 +870,10 @@ void HTTPServer::send_response_header(req_context *c)
                 if (method == "GET") 
                 {
                     response = response_static_file(c, uri);
-                    break;
+                }else{
+                    response = build_error_response(NotImplemented, "Method not allowed on resource.");
                 }
+                break;
             }
             else
             {
@@ -735,7 +892,6 @@ void HTTPServer::send_response_header(req_context *c)
             break;
         
         default:
-            response = build_error_response(InternalServerError, "Internal Server Error");
             break;
     }
 
@@ -809,6 +965,7 @@ enum write_req_status HTTPServer::send_response_file(req_context *c)
 
 std::string& HTTPServer::build_error_response(int status, const std::string& message) 
 {
+    builder.clear();
     return builder
         .http_resp_add_status(status)
         .http_resp_add_content_type("text/html")
@@ -820,6 +977,7 @@ std::string& HTTPServer::build_error_response(int status, const std::string& mes
 
 std::string& HTTPServer::build_success_response(int status, const std::string_view file_path, const size_t file_size) 
 { 
+    builder.clear();
     return builder
         .http_resp_add_status(status)
         .http_resp_add_content_type(builder.http_get_content_type(file_path))

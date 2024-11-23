@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <charconv>
 #include <ctime>
 #include <cerrno>
 #include <iostream>
@@ -18,15 +19,9 @@
 #define MAX_REQUEST_SIZE    8192U     // cap it at 8K  
 #define CR                  '\r'
 #define LF                  '\n'
+
 using namespace std::literals;
 
-
-/* 
-    - The Status-Code element is a 3-digit integer result code 
-      of the attempt to understand and satisfy the request. 
-    - The Reason-Phrase is intended to give a short textual 
-      description of the Status-Code.
- */
 typedef enum StatusCode {
     OK,
     Created,
@@ -131,6 +126,7 @@ public:
     HTTPBuilder& http_resp_add_access_auth(std::string_view access_auth);
     HTTPBuilder& http_resp_add_custom_header(std::string_view key, std::string_view value);
     std::string& build();
+    void clear();
 };
 
 /*
@@ -147,14 +143,19 @@ private:
     std::vector<std::pair<std::string_view, std::string_view>> headers;
     size_t header_count = 0;
 
+    std::string body;
+
 public:
     HTTPParser();
     StatusCode parse_request(const char* req);
-    StatusCode parse_headers(std::string_view headers_view);
+    StatusCode parse_headers(std::string_view headers_view, size_t& headers_end);
+    StatusCode parse_body(std::string_view body_view, size_t body_start);
+
     static bool is_method_valid(std::string_view method);
     const std::string& get_method() const; 
     const std::string& get_uri() const; 
     const std::string& get_version() const; 
+    const std::string& get_body() const; 
     std::string_view get_header(std::string_view name) const; 
     void clear();
 

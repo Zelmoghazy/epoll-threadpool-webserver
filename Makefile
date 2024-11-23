@@ -1,21 +1,22 @@
 CC=g++
 EXT=cpp
 
-OPT=
-DBG=
+OPT=-O0
+DBG=-g
 WARNINGS=-Wall -Wextra -Wsign-conversion -Wconversion
+STD=-std=c++17
 DEPFLAGS=-MP -MD
 
 INCS=$(foreach DIR,$(INC_DIRS),-I$(DIR))
 LIBS=$(foreach DIR,$(LIB_DIRS),-L$(DIR))
 LIBS+=
 
-CFLAGS=$(DBG) $(OPT) $(INCS) $(LIBS) $(WARNINGS) $(DEPFLAGS)
+CFLAGS=$(DBG) $(OPT) $(INCS) $(LIBS) $(WARNINGS) $(DEPFLAGS) $(STD)
 
-INC_DIRS=. ./inc/
+INC_DIRS=. ./inc/ ./external/inc/
 LIB_DIRS=
 BUILD_DIR=build
-CODE_DIRS=. src
+CODE_DIRS=. src external/src
 VPATH=$(CODE_DIRS)
 
 SRC=$(foreach DIR,$(CODE_DIRS),$(wildcard $(DIR)/*.$(EXT)))
@@ -58,6 +59,8 @@ $(BUILD_DIR):
 
 clean:
 	rm -fR $(BUILD_DIR)
+graph:
+	gprof ./build/Main gmon.out | gprof2dot -w -s | dot -Tsvg -o output.svg
 
 -include $(DEP)
 

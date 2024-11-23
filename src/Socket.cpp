@@ -111,7 +111,7 @@ int Socket::accept_connection()
         return -1;
     }
 
-    std::cout << "Client connected from IP: " << get_ip_addr((struct sockaddr *)&client_addr) << std::endl;
+    // std::cout << "Client connected from IP: " << get_ip_addr((struct sockaddr *)&client_addr) << std::endl;
 
     return connfd;
 }
