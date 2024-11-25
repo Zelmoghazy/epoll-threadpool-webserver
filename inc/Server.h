@@ -9,7 +9,6 @@
 #include <ThreadPool.h>
 #include <HTTP.h>
 
-
 struct EventPoll
 {
     Socket socket;

@@ -1,4 +1,5 @@
 #include <Utils.h>
+#include <fcntl.h>
 
 /* ----------------------- UTILS---------------------------------*/
 std::string read_entire_file(const std::string& filePath)
@@ -103,7 +104,25 @@ void executeCommand(const std::string& command)
     }
     else if (pid == 0) 
     {  
-        while(1);
+        // Open /dev/null for redirection
+        int devNull = open("/dev/null", O_WRONLY);
+        if (devNull == -1) {
+            std::cerr << "Failed to open /dev/null: " << std::strerror(errno) << std::endl;
+            exit(1);
+        }
+
+        // Redirect stdout and stderr to /dev/null
+        if (dup2(devNull, STDOUT_FILENO) == -1) {
+            std::cerr << "Failed to redirect stdout: " << std::strerror(errno) << std::endl;
+            exit(1);
+        }
+        if (dup2(devNull, STDERR_FILENO) == -1) {
+            std::cerr << "Failed to redirect stderr: " << std::strerror(errno) << std::endl;
+            exit(1);
+        }
+
+        close(devNull);
+
         execl("/bin/sh", "sh", "-c", command.c_str(), (char*)nullptr);
         
         // If execl fails

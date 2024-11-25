@@ -30,7 +30,7 @@
 		"System":	{
 			"subcategories":	{
 				"Monitoring":	{
-					"items":	["btop", "htop"]
+					"items":	["btop", "htop", "tree"]
 				},
 				"Wi-fi":	{
 					"items":	["scan", "saved", "show_pass"]

@@ -1,5 +1,7 @@
 #include <Server.h>
 
+extern context_pool *ctx_pool;
+
 // when epoll_wait returns, this array is modified to indicate information
 // about the subset of file descriptors in the interest list that are in the ready state
 EventPoll::EventPoll(const char *ip, const char *port, std::function<void(req_context*)> client_handler):client_handler_(client_handler)
@@ -176,7 +178,8 @@ void EventPoll::handle_new_connections()
         if (register_fd_ctx(c, (EPOLLIN | EPOLLET | EPOLLONESHOT)) < 0) 
         {
             // failed to register client, free memory and try again
-            delete_req_context(c);
+            // delete_req_context(c);
+            free_req_context(ctx_pool,c);
             close(connfd);
             continue;
         }

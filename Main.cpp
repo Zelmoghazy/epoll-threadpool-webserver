@@ -14,6 +14,8 @@
 // Supposed to be not shared among them
 thread_local HTTPServer http_server;
 
+context_pool *ctx_pool = nullptr;
+
 extern std::unordered_map<std::string, std::string> buttons;
 
 // State machine to handle incoming HTTP request
@@ -25,7 +27,6 @@ void handleClient(req_context *c)
         {
             case READ_REQUEST_INCOMPLETE:
                 c->state = READING;
-                // rearm to read again (should be thread safe)
                 EventPoll::mod_fd_read_ctx(c);
                 return;
             case READ_REQUEST_COMPLETE:
@@ -34,23 +35,28 @@ void handleClient(req_context *c)
                 break;
             case READ_REQUEST_ERROR:
                 c->state = DONE;
-                // Error, free memory and end connection
-                std::string& error_resp = http_server.build_error_response(InternalServerError, "Internal Server Error");
 
-                http_server.write_response(c, error_resp);
-                
-                if(c->connfd)
-                {
+                // Error, send error response, free memory and end connection
+                if(http_server.send_response_header(c)<0){
+                    std::cerr << "Error while sending the response header" << std::endl;
+                    exit(1);
+                }
+                if(c->connfd){
                     close(c->connfd);
                 }
-                delete_req_context(c);
+                // delete_req_context(c);
+                free_req_context(ctx_pool, c);
                 return;
         }
     }
 
     if(c->state == WRITING)
     {
-        http_server.send_response_header(c);
+        if(http_server.send_response_header(c)<0){
+            // something wrong occurred no idea how to proceed
+            std::cerr << "Error while sending the response header" << std::endl;
+            exit(1);
+        }
 
         switch (http_server.send_response_file(c))
         {
@@ -61,20 +67,20 @@ void handleClient(req_context *c)
 
             case WRITE_REQUEST_COMPLETE:
                 c->state = DONE;
-                if(c->connfd)
-                {
+                if(c->connfd){
                     close(c->connfd);
                 }
-                delete_req_context(c);
+                // delete_req_context(c);
+                free_req_context(ctx_pool, c);
                 break;
 
             case WRITE_REQUEST_ERROR:
                 c->state = DONE;
-                if(c->connfd)
-                {
+                if(c->connfd){
                     close(c->connfd);
                 }
-                delete_req_context(c);
+                // delete_req_context(c);
+                free_req_context(ctx_pool, c);
                 break;
         }
     }
@@ -90,6 +96,9 @@ void signalHandler(int signum)
 int main(void) 
 {
     signal(SIGINT, signalHandler);
+
+    ctx_pool = create_context_pool();
+    assert(ctx_pool);
 
     EventPoll ep("8080", handleClient);
     ep.event_loop();

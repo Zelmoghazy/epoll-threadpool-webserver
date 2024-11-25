@@ -21,6 +21,7 @@
     ## Monitoring
         - btop:terminator -e 'btop; exec bash' > /dev/null 2>&1 &
         - htop:terminator -e 'htop; exec bash' > /dev/null 2>&1 &
+        - tree:terminator -e 'watch -n 1 "ps auxf"; exec bash' > /dev/null 2>&1 &
     ## Wi-fi
         - scan:nmcli -f SSID dev wifi list --rescan yes
         - saved:nmcli con

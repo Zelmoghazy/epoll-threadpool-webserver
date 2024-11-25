@@ -15,6 +15,7 @@
 #include <linux/limits.h>
 #include <sys/sendfile.h>
 #include <Parser.h>
+#include <Utils.h>
 
 #define MAX_REQUEST_SIZE    8192U     // cap it at 8K  
 #define CR                  '\r'
@@ -63,6 +64,19 @@ enum write_req_status {
     WRITE_REQUEST_ERROR = -1
 };
 
+#define POOL_SIZE 1024 
+#define BLOCK_SIZE (sizeof(req_context) + MAX_REQUEST_SIZE)
+#define MAX_SPINS 1000 
+
+typedef struct context_pool{
+    char* memory_pool;
+    std::atomic_size_t bump_index;  // Current allocation index
+    void** free_blocks;        // Array of pointers to free blocks
+    std::atomic_int free_count;     // Number of blocks in free list
+    std::atomic_flag lock;          // Spinlock for thread safety
+    size_t total_blocks;       // Total number of blocks in pool
+} context_pool;
+
 typedef struct req_context
 {
     req_state           state;              // current state of the req
@@ -80,7 +94,33 @@ typedef struct req_context
     size_t               remaining;
 }req_context;
 
+/* 
+struct context_pool
+{
+    char* memory_pool;
+    size_t bump_index;          // Current allocation index
+    void** free_blocks;         // Array of pointers to free blocks
+    int free_count;             // Number of blocks in free list
+    size_t total_blocks;        // Total number of blocks in pool
+
+    static constexpr int POOL_SIZE  =   128;
+    static constexpr int BLOCK_SIZE =  (sizeof(req_context) + MAX_REQUEST_SIZE);
+
+    context_pool();
+    ~context_pool();
+    req_context* alloc_req_context(int connfd, int epollfd);
+    void free_req_context(req_context* ctx);
+};
+*/
+
 extern const std::unordered_map<std::string, std::string> mime_types;
+
+static inline void spin_lock(std::atomic_flag* lock);
+static inline void spin_unlock(std::atomic_flag* lock);
+context_pool* create_context_pool(void);
+void destroy_context_pool(context_pool* pool);
+req_context* alloc_req_context(context_pool* pool, int connfd, int epollfd);
+void free_req_context(context_pool* pool, req_context* ctx); 
 
 req_context *new_req_context(int connfd, int epollfd);
 void delete_req_context(req_context *c);
@@ -117,8 +157,11 @@ public:
     HTTPBuilder& http_resp_add_authorization(std::string_view auth);
     HTTPBuilder& http_resp_add_date(); 
     HTTPBuilder& http_resp_add_expires(std::string_view expires);
+    HTTPBuilder& http_resp_add_from(std::string_view email);
+    HTTPBuilder& http_resp_add_if_modified_since(std::string_view date);
     HTTPBuilder& http_resp_add_last_modified(std::string_view last_modified);
     HTTPBuilder& http_resp_add_location(std::string_view location);
+    HTTPBuilder& http_resp_add_pragma(std::string_view directive);
     HTTPBuilder& http_resp_add_referer(std::string_view referer);
     HTTPBuilder& http_resp_add_server(std::string_view server_name);
     HTTPBuilder& http_resp_add_user_agent(std::string_view user_agent);
@@ -176,8 +219,8 @@ public:
     void add_route(const std::string& method, const std::string& path, RequestHandler handler);
     std::string& response_static_file(req_context *c, const std::string& uri);
     std::string_view response_body(int status, const std::string& message);
-    void send_response_header(req_context *c);
-    void write_response(req_context *c , std::string& response);
+    int send_response_header(req_context *c);
+    int write_response(req_context *c , std::string& response);
     enum write_req_status send_response_file(req_context *c);
     std::string& build_error_response(int status, const std::string& message) ;
     std::string& build_success_response(int status, const std::string_view file_path, const size_t file_size);

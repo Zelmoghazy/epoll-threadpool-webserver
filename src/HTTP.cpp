@@ -1,4 +1,5 @@
 #include <HTTP.h>
+#include <atomic>
 
 std::unordered_map<std::string, std::string> buttons;
 
@@ -13,27 +14,31 @@ status_code_t codes[] =
     /*  1xx: Informational - Not used, but reserved for future use */
 
     /*  2xx: Success - The action was successfully received, understood, and accepted. */
+
     {200, "OK"},
-    {201, "Created"},
-    {202, "Accepted"},
-    {204, "No Content"},
+    {201, "Created"},           // resulted in a new resource being created.
+    {202, "Accepted"},          // the processing has not been completed
+    {204, "No Content"},        // there is no new information to send back.
 
     /*  3xx: Redirection - Further action must be taken in order to complete the request */
-    {301, "Moved Permanently"},
-    {302, "Moved Temporarily"},
-    {304, "Not Modified"},
+
+    {301, "Moved Permanently"}, // requested resource has been assigned a new permanent URL
+    {302, "Moved Temporarily"}, // requested resource has been assigned a new permanent URL
+    {304, "Not Modified"},      // conditional GET request, not modified since
 
     /* 4xx: Client Error - The request contains bad syntax or cannot be fulfilled */
-    {400, "Bad Request"},
-    {401, "Unauthorized"},
-    {403, "Forbidden"},
-    {404, "Not Found"},
+
+    {400, "Bad Request"},       // malformed syntax.
+    {401, "Unauthorized"},      // request requires user authentication
+    {403, "Forbidden"},         // refusing to fulfill request.
+    {404, "Not Found"},         // didnt find anythin matching the request-URI
 
     /* 5xx: Server Error - The server failed to fulfill an apparently valid request */
-    {500, "Internal Server Error"},
+
+    {500, "Internal Server Error"},   // server encountered an unexpected condition
     {501, "Not Implemented"},         // if the method is unrecognized or not implemented
-    {502, "Bad Gateway"},
-    {503, "Service Unavailable"},
+    {502, "Bad Gateway"},             // while acting as a gateway or proxy, received an invalid response
+    {503, "Service Unavailable"},     // unable to handle, temporary overloading or maintenance of the server
 };
 
 /*
@@ -85,6 +90,224 @@ constexpr std::array<std::string_view, 9> valid_methods =
     "GET", "POST", "PUT", "DELETE", "HEAD", 
     "OPTIONS", "PATCH", "TRACE", "CONNECT"
 };
+
+/* 
+context_pool::context_pool()
+{
+    size_t total_size = POOL_SIZE * BLOCK_SIZE;
+    // alignment dont forget !!!
+    memory_pool = (char *)aligned_alloc(64, total_size);  
+    if (!memory_pool) {
+        exit(1);
+    }
+    
+    free_blocks = (void**)malloc(POOL_SIZE * sizeof(void*));
+    if (!free_blocks) {
+        free(memory_pool);
+        exit(1);
+    }
+    bump_index = 0;
+    free_count = 0;
+    total_blocks = POOL_SIZE;
+}
+
+context_pool::~context_pool()
+{
+    // Clean up any open files in active contexts
+    size_t current_index = bump_index;
+    for (size_t i = 0; i < current_index; i++) {
+        req_context* ctx = (req_context*)(memory_pool + (i * BLOCK_SIZE));
+        if (ctx->req_file) {
+            fclose(ctx->req_file);
+        }
+    }
+    
+    free(free_blocks);
+    free(memory_pool);
+}
+
+req_context* context_pool::alloc_req_context(int connfd, int epollfd) 
+{
+    req_context* ctx = nullptr;
+    
+    // Try to reuse a freed block first
+    int free_idx = free_count - 1;
+    if (free_idx >= 0) {
+        ctx = (req_context*)free_blocks[free_idx];
+        free_count-= 1;
+    }
+    // Otherwise use bump allocation
+    else {
+        size_t index = bump_index;
+        if (index < total_blocks) {
+            ctx = (req_context*)(memory_pool + (index * BLOCK_SIZE));
+            bump_index+= 1;
+        }
+    }
+    
+    if (ctx) {
+        // Initialize the context while still holding the lock
+        ctx->state = READING;
+        ctx->connfd = connfd;
+        ctx->epoll_fd = epollfd;
+        ctx->read_buf = (char*)ctx + sizeof(req_context);
+        ctx->read_ptr = nullptr;
+        ctx->read_cnt = 0;
+        ctx->total_read = 0;
+        ctx->req_file = nullptr;
+        ctx->remaining = 0;
+    }
+    
+    return ctx;
+}
+
+void context_pool::free_req_context(req_context* ctx) 
+{
+    if (!ctx)
+        return;
+    
+    // Close file handle without lock since it's specific to this context
+    if (ctx->req_file) {
+        fclose(ctx->req_file);
+        ctx->req_file = NULL;
+    }
+    
+    // Add to free blocks if we have space
+    int current_free = free_count;
+    if (current_free < total_blocks) {
+        free_blocks[current_free] = ctx;
+        free_count+= 1;
+    }
+} */
+
+static inline void spin_lock(std::atomic_flag* lock) {
+    int spins = 0;
+    while (atomic_flag_test_and_set_explicit(lock, std::memory_order_acquire)) {
+        spins++;
+        if (spins > MAX_SPINS) {
+            sched_yield();  // Yield to other threads if spinning too long
+            spins = 0;
+        }
+    }
+}
+
+static inline void spin_unlock(std::atomic_flag* lock) {
+    atomic_flag_clear_explicit(lock, std::memory_order_release);
+}
+
+context_pool* create_context_pool(void) 
+{
+    context_pool* pool = (context_pool*)malloc(sizeof(context_pool));
+    if (!pool) return nullptr;
+    
+    // Allocate the memory pool
+    size_t total_size = POOL_SIZE * BLOCK_SIZE;
+
+    // alignment dont forget !!!
+    pool->memory_pool = (char *)aligned_alloc(64, total_size);  // Cache-line aligned allocation
+    if (!pool->memory_pool) {
+        free(pool);
+        return nullptr;
+    }
+    
+    // Initialize free blocks array
+    pool->free_blocks = (void**)malloc(POOL_SIZE * sizeof(void*));
+    if (!pool->free_blocks) {
+        free(pool->memory_pool);
+        free(pool);
+        return nullptr;
+    }
+    
+    atomic_init(&pool->bump_index, 0);
+    atomic_init(&pool->free_count, 0);
+    atomic_flag_clear(&pool->lock);
+    pool->total_blocks = POOL_SIZE;
+    
+    return pool;
+}
+
+void destroy_context_pool(context_pool* pool) 
+{
+    if (!pool) return;
+    
+    // Acquire lock before cleanup
+    spin_lock(&pool->lock);
+    
+    // Clean up any open files in active contexts
+    size_t current_index = atomic_load(&pool->bump_index);
+    for (size_t i = 0; i < current_index; i++) {
+        req_context* ctx = (req_context*)(pool->memory_pool + (i * BLOCK_SIZE));
+        if (ctx->req_file) {
+            fclose(ctx->req_file);
+        }
+    }
+    
+    free(pool->free_blocks);
+    free(pool->memory_pool);
+    free(pool);
+}
+
+req_context* alloc_req_context(context_pool* pool, int connfd, int epollfd) 
+{
+    if (!pool) return nullptr;
+    
+    req_context* ctx = nullptr;
+    
+    spin_lock(&pool->lock);
+    
+    // Try to reuse a freed block first
+    int free_idx = atomic_load(&pool->free_count) - 1;
+    if (free_idx >= 0) {
+        ctx = (req_context*)pool->free_blocks[free_idx];
+        atomic_fetch_sub(&pool->free_count, 1);
+    }
+    // Otherwise use bump allocation
+    else {
+        size_t index = atomic_load(&pool->bump_index);
+        if (index < pool->total_blocks) {
+            ctx = (req_context*)(pool->memory_pool + (index * BLOCK_SIZE));
+            atomic_fetch_add(&pool->bump_index, 1);
+        }
+    }
+    
+    if (ctx) {
+        // Initialize the context while still holding the lock
+        ctx->state = READING;
+        ctx->connfd = connfd;
+        ctx->epoll_fd = epollfd;
+        ctx->read_buf = (char*)ctx + sizeof(req_context);
+        ctx->read_ptr = nullptr;
+        ctx->read_cnt = 0;
+        ctx->total_read = 0;
+        ctx->req_file = nullptr;
+        ctx->remaining = 0;
+    }
+    
+    spin_unlock(&pool->lock);
+    return ctx;
+}
+
+void free_req_context(context_pool* pool, req_context* ctx) 
+{
+    if (!pool || !ctx) return;
+    
+    // Close file handle without lock since it's specific to this context
+    if (ctx->req_file) {
+        fclose(ctx->req_file);
+        ctx->req_file = NULL;
+    }
+    
+    spin_lock(&pool->lock);
+    
+    // Add to free blocks if we have space
+    int current_free = atomic_load(&pool->free_count);
+    if (current_free < pool->total_blocks) {
+        pool->free_blocks[current_free] = ctx;
+        atomic_fetch_add(&pool->free_count, 1);
+    }
+    
+    spin_unlock(&pool->lock);
+}
 
 /* didnt want to make it a whole class */
 req_context *new_req_context(int connfd, int epollfd)
@@ -235,11 +458,19 @@ HTTPBuilder& HTTPBuilder::http_resp_add_content_body(std::string_view content)
 }
 
 /* 
+    - The Content-Length entity-header field indicates the size of the
+      Entity-Body, in decimal number of octets, sent to the recipient or,
+      in the case of the HEAD method, the size of the Entity-Body that
+      would have been sent had the request been a GET.
+
     - HTTP/1.0 requests containing an entity body 
       must include a valid Content-Length header field.
 
     - If a request contains an entity body and Content-Length 
       is not specified, the server should send a 400 (bad request) response
+
+    - An example is
+        Content-Length: 3495
  */
 HTTPBuilder& HTTPBuilder::http_resp_add_content_length(size_t size) 
 {
@@ -275,6 +506,9 @@ HTTPBuilder& HTTPBuilder::http_resp_add_content_type(std::string_view type)
 
     - If the media type remains unknown, the recipient should
       treat it as type "application/octet-stream".
+
+    - An example of the field is
+        Content-Type: text/html
  */
 std::string_view HTTPBuilder::http_get_content_type(std::string_view file_path) 
 {
@@ -294,16 +528,21 @@ std::string_view HTTPBuilder::http_get_content_type(std::string_view file_path)
 
 /*
     - Content coding values are used to indicate an encoding transformation
-      that has been applied to a resource. Content codings are primarily
-      used to allow a document to be compressed or encrypted without losing
-      the identity of its underlying media type. Typically, the resource is
-      stored in this encoding and only decoded before rendering or
-      analogous usage.
+      that has been applied to a resource. 
+
+    - The Content-Encoding is primarily used to allow a document to be
+      compressed without losing the identity of its underlying media type..
+      
+    - Typically, the resource is stored in this encoding and only decoded 
+      before rendering or analogous usage.
 
     - what is more important is that it indicates what decoding 
       mechanism will be required to remove the encoding. 
 
     - The default for the content encoding is none
+
+    - An example of its use is
+        Content-Encoding: x-gzip
  */
 HTTPBuilder& HTTPBuilder::http_resp_add_content_encoding(std::string_view encoding) 
 {
@@ -313,6 +552,13 @@ HTTPBuilder& HTTPBuilder::http_resp_add_content_encoding(std::string_view encodi
     return *this;
 }
 
+/*
+    The Allow entity-header field lists the set of methods supported by
+    the resource identified by the Request-URI.
+
+    Example of use:
+        Allow: GET, HEAD
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_allow(std::string_view methods) 
 {
     headers += "Allow: ";
@@ -320,6 +566,13 @@ HTTPBuilder& HTTPBuilder::http_resp_add_allow(std::string_view methods)
     headers += "\r\n";
     return *this;
 }
+
+/*
+    A user agent that wishes to authenticate itself with a server--
+    usually, but not necessarily, after receiving a 401 response--may do
+    so by including an Authorization request-header field with the
+    request.
+ */
 
 HTTPBuilder& HTTPBuilder::http_resp_add_authorization(std::string_view auth) 
 {
@@ -329,8 +582,16 @@ HTTPBuilder& HTTPBuilder::http_resp_add_authorization(std::string_view auth)
     return *this;
 }
 /*
-    Preferred as an Internet standard and represents
-    a fixed-length subset of that defined by RFC 1123
+    - The Date general-header field represents the date and time at which
+      the message was originated
+
+    - Preferred as an Internet standard and represents
+      a fixed-length subset of that defined by RFC 1123
+
+    - origin servers should always include a Date header.
+
+    - An example is
+        Date: Tue, 15 Nov 1994 08:12:31 GMT
 */
 HTTPBuilder& HTTPBuilder::http_resp_add_date() 
 {
@@ -347,6 +608,14 @@ HTTPBuilder& HTTPBuilder::http_resp_add_date()
     return *this;
 }
 
+/*
+    - The Expires entity-header field gives the date/time after which the
+      entity should be considered stale.
+
+    - An example of its use is
+        Expires: Thu, 01 Dec 1994 16:00:00 GMT
+ */
+
 HTTPBuilder& HTTPBuilder::http_resp_add_expires(std::string_view expires)
 {
     headers += "Expires: ";
@@ -355,6 +624,37 @@ HTTPBuilder& HTTPBuilder::http_resp_add_expires(std::string_view expires)
     return *this;
 }
 
+/*
+    The From request-header field, if given, should contain an Internet
+    e-mail address for the human user who controls the requesting user
+    agent.
+ */
+HTTPBuilder& HTTPBuilder::http_resp_add_from(std::string_view email)
+{
+    headers += "From: ";
+    headers += email;
+    headers += "\r\n";
+    return *this;
+}
+
+/*
+    The If-Modified-Since request-header field is used with the GET
+    method to make it conditional: if the requested resource has not been
+    modified since the time specified in this field, a copy of the
+    resource will not be returned from the server;
+ */
+HTTPBuilder& HTTPBuilder::http_resp_add_if_modified_since(std::string_view date) 
+{
+    headers += "If-Modified-Since: ";
+    headers += date;
+    headers += "\r\n";
+    return *this;
+}
+
+/*
+    The Last-Modified entity-header field indicates the date and time at
+    which the sender believes the resource was last modified.
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_last_modified(std::string_view last_modified) 
 {
     headers += "Last-Modified: ";
@@ -363,6 +663,10 @@ HTTPBuilder& HTTPBuilder::http_resp_add_last_modified(std::string_view last_modi
     return *this;
 }
 
+/*
+    The Location response-header field defines the exact location of the
+    resource that was identified by the Request-URI. 
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_location(std::string_view location) 
 {
     headers += "Location: ";
@@ -371,6 +675,26 @@ HTTPBuilder& HTTPBuilder::http_resp_add_location(std::string_view location)
     return *this;
 }
 
+/*
+    The Pragma general-header field is used to include implementation-
+    specific directives that may apply to any recipient along the
+    request/response chain.
+
+    - pragma-directive = "no-cache" | extension-pragma
+ */
+HTTPBuilder& HTTPBuilder::http_resp_add_pragma(std::string_view directive) 
+{
+    headers += "Pragma: ";
+    headers += directive;
+    headers += "\r\n";
+    return *this;
+}
+
+/*
+    The Referer request-header field allows the client to specify, for
+    the server’s benefit, the address (URI) of the resource from which
+    the Request-URI was obtained.
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_referer(std::string_view referer) 
 {
     headers += "Referer: ";
@@ -379,6 +703,12 @@ HTTPBuilder& HTTPBuilder::http_resp_add_referer(std::string_view referer)
     return *this;
 }
 
+/*
+    The Server response-header field contains information about the
+    software used by the origin server to handle the request.
+    Example:
+        Server: CERN/3.0 libwww/2.17
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_server(std::string_view server_name) 
 {
     headers += "Server: ";
@@ -387,6 +717,13 @@ HTTPBuilder& HTTPBuilder::http_resp_add_server(std::string_view server_name)
     return *this;
 }
 
+/*
+    The User-Agent request-header field contains information about the
+    user agent originating the request. This is for statistical purposes,
+    the tracing of protocol violations, and automated recognition of user
+    agents for the sake of tailoring responses to avoid particular user
+    agent limitations.
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_user_agent(std::string_view user_agent) 
 {
     headers += "User-Agent: ";
@@ -395,6 +732,12 @@ HTTPBuilder& HTTPBuilder::http_resp_add_user_agent(std::string_view user_agent)
     return *this;
 }
 
+/*
+    The WWW-Authenticate response-header field must be included in 401
+    (unauthorized) response messages. The field value consists of at
+    least one challenge that indicates the authentication scheme(s) and
+    parameters applicable to the Request-URI.
+ */
 HTTPBuilder& HTTPBuilder::http_resp_add_www_auth(std::string_view auth) 
 {
     headers += "WWW-Authenticate: ";
@@ -403,6 +746,15 @@ HTTPBuilder& HTTPBuilder::http_resp_add_www_auth(std::string_view auth)
     return *this;
 }
 
+/* 
+    HTTP provides a simple challenge-response authentication mechanism
+    which may be used by a server to challenge a client request and by a
+    client to provide authentication information. It uses an extensible,
+    case-insensitive token to identify the authentication scheme,
+    followed by a comma-separated list of attribute-value pairs which
+    carry the parameters necessary for achieving authentication via that
+    scheme. 
+*/
 HTTPBuilder& HTTPBuilder::http_resp_add_access_auth(std::string_view access_auth) 
 {
     headers += "Access-Control-Allow-Origin: ";
@@ -594,7 +946,7 @@ StatusCode HTTPParser::parse_headers(std::string_view headers_view, size_t& head
 
         if (line.empty()) {
             // we are done
-            headers_end = pos + 2;
+            headers_end = pos;
             return OK; 
         }
 
@@ -624,6 +976,11 @@ StatusCode HTTPParser::parse_headers(std::string_view headers_view, size_t& head
 
 StatusCode HTTPParser::parse_body(std::string_view body_view, size_t body_start) 
 {
+    /*
+        A valid Content-Length is required on all HTTP/1.0 POST requests.
+        An HTTP/1.0 server should respond with a 400 (bad request) message 
+        if it cannot determine the length of the request message’s content. 
+     */
     std::string_view content_length = get_header("Content-Length");
     if(content_length.empty())
     {
@@ -631,7 +988,7 @@ StatusCode HTTPParser::parse_body(std::string_view body_view, size_t body_start)
     }
 
     /* Get length from string_view */
-    unsigned long long length;
+    unsigned long long length = 0;
     auto [ptr, err] = std::from_chars(content_length.data(), content_length.data() + content_length.size(), length);
     if (err == std::errc{} && ptr != content_length.data() + content_length.size()) {
         std::cerr << "Content Length conversion failed " << std::endl;
@@ -747,6 +1104,7 @@ void HTTPServer::setup_default_routes()
     });
 
     add_route("POST", "/action", [this](req_context *c) -> std::string& {
+        (void) c;
         cJSON *json = cJSON_Parse(parser.get_body().c_str());
 
         if (json) 
@@ -757,22 +1115,18 @@ void HTTPServer::setup_default_routes()
                 // Log the action for debugging
                 std::cout << "Action received: " << action << std::endl;
 
-                // executeCommand(buttons[action]);  
-                
-                //  Response header
-
+                executeCommand(buttons[action]);  
             }
             cJSON_Delete(json);
         }
         builder.clear();
         return builder
-        .http_resp_add_status(OK)
-        .http_resp_add_access_auth("*")
-        .http_resp_add_custom_header("Connecton", "close")
-        .build();
+                .http_resp_add_status(OK)
+                .http_resp_add_access_auth("*")
+                .http_resp_add_custom_header("Connecton", "close")
+                .build();
     });
 }
-
 
 void HTTPServer::add_route(const std::string& method, const std::string& path, RequestHandler handler) 
 {
@@ -795,14 +1149,14 @@ std::string& HTTPServer::response_static_file(req_context *c, const std::string&
     root_directory.resize(original_length);
 
     if (res == NULL){
-        return build_error_response(BadRequest, "Invalid path");
+        return build_error_response(NotFound, "Invalid path");
     }
 
     std::string_view file_path = abs_path;
 
     // Double check nothing is going on
     if (file_path.substr(0, original_length) != root_directory) {
-        return build_error_response(BadRequest, "Invalid path");
+        return build_error_response(NotFound, "Invalid path");
     }
 
     size_t file_size;
@@ -829,80 +1183,91 @@ std::string_view HTTPServer::response_body(int status, const std::string& messag
         .build();
 }
 
-void HTTPServer::send_response_header(req_context *c)
+int HTTPServer::send_response_header(req_context *c)
 {
     /* 
         regular references can only be bound once
      */
     std::reference_wrapper<std::string> response = build_error_response(InternalServerError, "Internal Server Error");
 
-    switch(parser.parse_request(c->read_buf))
+    switch(c->state)
     {
-        case OK:
-        {
-            const std::string& method = parser.get_method();
-            const std::string& uri    = parser.get_uri();
-
-            /*
-                - Many operating systems use ".." as a path component to indicate a
-                    directory level above the current one
-
-                - an HTTP server must disallow any such construct in the Request-URI if it
-                    would otherwise allow access to a resource outside those intended to
-                    be accessible via the HTTP server.
-            */
-            if (uri.find("..") != std::string::npos) {
-                response = build_error_response(BadRequest, "Invalid path");
-                break;
-            }
-
-            if (route_handlers.find(method) == route_handlers.end()) {
-                response = build_error_response(NotImplemented, "Method not allowed on resource.");
-                break;
-            }
-
-            // Check if route exists for this method
-            auto& method_routes = route_handlers[method];
-
-            // If there is no handle we will try to serve a static file 
-            if (method_routes.find(uri) == method_routes.end()) 
+        case WRITING:
+            switch(parser.parse_request(c->read_buf))
             {
-                if (method == "GET") 
+                case OK:
                 {
-                    response = response_static_file(c, uri);
-                }else{
-                    response = build_error_response(NotImplemented, "Method not allowed on resource.");
+                    const std::string& method = parser.get_method();
+                    const std::string& uri    = parser.get_uri();
+
+                    /*
+                        - Many operating systems use ".." as a path component to indicate a
+                            directory level above the current one
+
+                        - an HTTP server must disallow any such construct in the Request-URI if it
+                            would otherwise allow access to a resource outside those intended to
+                            be accessible via the HTTP server.
+                    */
+                    if (uri.find("..") != std::string::npos) {
+                        response = build_error_response(Forbidden, "Traversing file directory is not allowed");
+                        break;
+                    }
+
+                    if (route_handlers.find(method) == route_handlers.end()) {
+                        response = build_error_response(NotImplemented, "Method not allowed on resource.");
+                        break;
+                    }
+
+                    // Check if route exists for this method
+                    auto& method_routes = route_handlers[method];
+
+                    // If there is no handle we will try to serve a static file 
+                    if (method_routes.find(uri) == method_routes.end()) 
+                    {
+                        if (method == "GET") 
+                        {
+                            response = response_static_file(c, uri);
+                        }else{
+                            response = build_error_response(NotImplemented, "Method not allowed on resource.");
+                        }
+                        break;
+                    }
+                    else
+                    {
+                        response = route_handlers[method][uri](c);
+                        break;
+                    }
+                    break;
                 }
-                break;
+                
+                case BadRequest:
+                    response = build_error_response(BadRequest, "Bad Request");
+                    break;
+                
+                case InternalServerError:
+                    response = build_error_response(InternalServerError, "Internal Server Error");
+                    break;
+                
+                default:
+                    break;
             }
-            else
-            {
-                response = route_handlers[method][uri](c);
-                break;
-            }
             break;
-        }
-        
-        case BadRequest:
-            response = build_error_response(BadRequest, "Bad Request");
-            break;
-        
-        case InternalServerError:
-            response = build_error_response(InternalServerError, "Internal Server Error");
-            break;
-        
-        default:
+
+        /* 
+            Error occurred while reading 
+         */
+        case READING:
+            std::cerr << "Error state: shouldnt be sending response headers while in reading state" << std::endl;
+        case DONE:
             break;
     }
 
-    write_response(c, response);
+    return write_response(c, response);
 }
 
-void HTTPServer::write_response(req_context *c , std::string& response)
+int HTTPServer::write_response(req_context *c , std::string& response)
 {
-    if(writen(c->connfd, response.c_str(), (ssize_t)response.size())<0){
-        std::cerr << "Error while sending the response header" << std::endl;
-    }
+    return writen(c->connfd, response.c_str(), (ssize_t)response.size());
 }
 
 enum write_req_status HTTPServer::send_response_file(req_context *c)
@@ -1070,7 +1435,7 @@ enum read_req_status HTTPServer::read_http_request(req_context *c)
     else
     {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            /* Not ready to read, return incomplete */
+            /* Not ready to read now, rearm and return incomplete */
             return READ_REQUEST_INCOMPLETE;
         }
         /* Real error occurred */
