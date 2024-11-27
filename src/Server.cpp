@@ -1,4 +1,5 @@
 #include <Server.h>
+#include <unistd.h>
 
 extern context_pool *ctx_pool;
 
@@ -20,12 +21,12 @@ EventPoll::EventPoll(const char *ip, const char *port, std::function<void(req_co
 
 EventPoll::EventPoll(const char* port,  std::function<void(req_context*)> client_handler) : EventPoll(NULL,port,client_handler){}
 
-EventPoll::~EventPoll() {
+EventPoll::~EventPoll() 
+{
     if (epoll_fd >= 0) {
         close(epoll_fd);
     }
 }
-
 
 void EventPoll::register_fd(int fd, uint32_t event_flags)
 {
@@ -75,7 +76,7 @@ void EventPoll::mod_fd_read(int fd)
     ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
     // ev.data.ptr = /**/;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
-        std::cerr << "Failed to remove fd from epoll" << std::endl;
+        std::cerr << "Failed to modify fd to read from epoll interest list !" << std::endl;
         exit(1);
     }
 }
@@ -88,7 +89,7 @@ void EventPoll::mod_fd_write(int fd)
     ev.events = EPOLLOUT | EPOLLET | EPOLLONESHOT;
     // ev.data.ptr = /**/;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
-        std::cerr << "Failed to remove fd from epoll" << std::endl;
+        std::cerr << "Failed to modify fd to write from epoll interest list !" << std::endl;
         exit(1);
     }
 }
@@ -115,12 +116,29 @@ void EventPoll::mod_fd_write_ctx(req_context *c)
 
 void EventPoll::event_loop()
 {
+    /*
+        typedef union epoll_data {
+            void    *ptr;           // Pointer to user-defined data 
+            int      fd;            // File descriptor
+            uint32_t u32;
+            uint64_t u64;
+        } epoll_data_t;
+
+        struct epoll_event {
+            uint32_t     events;     // Epoll events 
+            epoll_data_t data;       // User data variable 
+        }; 
+     */
     struct epoll_event events[MAX_EVENTS]; 
 
     for(;;) 
     {
-        // waits for I/O events, blocking the calling thread if no events are currently available.
-        // TODO: set timeout
+        /*
+            - waits for I/O events, blocking the calling 
+              thread if no events are currently available.
+            - can unblock if interrupted by a signal
+            - TODO: set timeout, now its blocking forever
+        */
         int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
 
         if (nfds <= 0) 
@@ -143,7 +161,18 @@ void EventPoll::event_loop()
             } 
             else 
             {
-                handle_client_data(events[i].data.ptr);
+                req_context *ctx = ((req_context* )events[i].data.ptr);
+
+                if((ctx->state == DONE) || (events[i].events & (EPOLLHUP | EPOLLERR)))
+                {
+                    if(ctx->connfd){
+                        close(ctx->connfd);
+                    }
+                    // delete_req_context(c);
+                    free_req_context(ctx_pool, ctx);
+                }else{
+                    handle_client_data(ctx);
+                }
             }
         }
     }
@@ -167,7 +196,7 @@ void EventPoll::handle_new_connections()
         socket.set_non_blocking(connfd);
         
         // new data structure to hold the context of the IO
-        req_context* c = new_req_context(connfd, epoll_fd);
+        req_context* c = alloc_req_context(ctx_pool, connfd, epoll_fd);
 
         /*
             - Associated file is available for read operations
@@ -186,10 +215,8 @@ void EventPoll::handle_new_connections()
     }
 }
 
-void EventPoll::handle_client_data(void* data) 
+void EventPoll::handle_client_data(req_context* context) 
 {
-    req_context* context = static_cast<req_context*>(data);
-
     if (client_handler_) 
     {
         thread_pool_.QueueJob([this, context]() {

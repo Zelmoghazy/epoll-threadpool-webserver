@@ -198,7 +198,10 @@ static inline void spin_unlock(std::atomic_flag* lock) {
 context_pool* create_context_pool(void) 
 {
     context_pool* pool = (context_pool*)malloc(sizeof(context_pool));
-    if (!pool) return nullptr;
+    if (!pool) {
+        std::cerr << "Failed to allocate memory pool\n";
+        return nullptr;
+    }
     
     // Allocate the memory pool
     size_t total_size = POOL_SIZE * BLOCK_SIZE;
@@ -228,7 +231,9 @@ context_pool* create_context_pool(void)
 
 void destroy_context_pool(context_pool* pool) 
 {
-    if (!pool) return;
+    if (!pool){
+        return;
+    }
     
     // Acquire lock before cleanup
     spin_lock(&pool->lock);
@@ -249,7 +254,10 @@ void destroy_context_pool(context_pool* pool)
 
 req_context* alloc_req_context(context_pool* pool, int connfd, int epollfd) 
 {
-    if (!pool) return nullptr;
+    if (!pool)
+    {
+        return nullptr;
+    }
     
     req_context* ctx = nullptr;
     
@@ -262,18 +270,22 @@ req_context* alloc_req_context(context_pool* pool, int connfd, int epollfd)
         atomic_fetch_sub(&pool->free_count, 1);
     }
     // Otherwise use bump allocation
-    else {
+    else 
+    {
         size_t index = atomic_load(&pool->bump_index);
         if (index < pool->total_blocks) {
             ctx = (req_context*)(pool->memory_pool + (index * BLOCK_SIZE));
             atomic_fetch_add(&pool->bump_index, 1);
+        }else{
+            std::cerr << "Give me more memory!!!\n";
+            exit(1);
         }
     }
     
     if (ctx) {
         // Initialize the context while still holding the lock
-        ctx->state = READING;
-        ctx->connfd = connfd;
+        ctx->state    = READING;
+        ctx->connfd   = connfd;
         ctx->epoll_fd = epollfd;
         ctx->read_buf = (char*)ctx + sizeof(req_context);
         ctx->read_ptr = nullptr;
@@ -294,14 +306,14 @@ void free_req_context(context_pool* pool, req_context* ctx)
     // Close file handle without lock since it's specific to this context
     if (ctx->req_file) {
         fclose(ctx->req_file);
-        ctx->req_file = NULL;
+        ctx->req_file = nullptr;
     }
     
     spin_lock(&pool->lock);
     
     // Add to free blocks if we have space
     int current_free = atomic_load(&pool->free_count);
-    if (current_free < pool->total_blocks) {
+    if (current_free < (int)pool->total_blocks) {
         pool->free_blocks[current_free] = ctx;
         atomic_fetch_add(&pool->free_count, 1);
     }
@@ -1305,7 +1317,7 @@ enum write_req_status HTTPServer::send_response_file(req_context *c)
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
             } else {
-                std::cerr << "erro sending file:" <<  std::strerror(errno) << std::endl;
+                std::cerr << "error sending file:" <<  std::strerror(errno) << std::endl;
                 return WRITE_REQUEST_ERROR;
             }
         } 

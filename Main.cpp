@@ -11,7 +11,6 @@
 #include "Parser.h"
 
 // Every thread can have a local copy of this global object
-// Supposed to be not shared among them
 thread_local HTTPServer http_server;
 
 context_pool *ctx_pool = nullptr;
@@ -41,11 +40,8 @@ void handleClient(req_context *c)
                     std::cerr << "Error while sending the response header" << std::endl;
                     exit(1);
                 }
-                if(c->connfd){
-                    close(c->connfd);
-                }
-                // delete_req_context(c);
-                free_req_context(ctx_pool, c);
+                // trigger epoll to free allocated memory
+                EventPoll::mod_fd_write_ctx(c);
                 return;
         }
     }
@@ -66,21 +62,15 @@ void handleClient(req_context *c)
                 break;
 
             case WRITE_REQUEST_COMPLETE:
-                c->state = DONE;
-                if(c->connfd){
-                    close(c->connfd);
-                }
-                // delete_req_context(c);
-                free_req_context(ctx_pool, c);
+                c->state = DONE;                 
+                // trigger epoll to free allocated memory
+                EventPoll::mod_fd_write_ctx(c);
                 break;
 
             case WRITE_REQUEST_ERROR:
                 c->state = DONE;
-                if(c->connfd){
-                    close(c->connfd);
-                }
-                // delete_req_context(c);
-                free_req_context(ctx_pool, c);
+                // trigger epoll to free allocated memory
+                EventPoll::mod_fd_write_ctx(c);
                 break;
         }
     }
@@ -96,6 +86,7 @@ void signalHandler(int signum)
 int main(void) 
 {
     signal(SIGINT, signalHandler);
+    signal(SIGPIPE, SIG_IGN);
 
     ctx_pool = create_context_pool();
     assert(ctx_pool);

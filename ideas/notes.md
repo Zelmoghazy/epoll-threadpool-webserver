@@ -209,3 +209,39 @@ By contrast, in edge-triggered mode the kernel skips this check and immediately 
 This edge-triggered mode is what makes epoll an O(1) I/O multiplexer: the epoll_wait call will suspend immediately, and since a list is maintained for each file descriptor ahead of time, when new data comes in the kernel immediately knows what processes must be woken up in O(1) time.
 
 To use edge-triggered polling you must put the file descriptors into nonblocking mode. Then you must call read or write until they return EWOULDBLOCK every time. 
+
+
+--- 
+By default, once a file descriptor is added to an epoll interest list using the epoll_ctl()
+EPOLL_CTL_ADD operation, it remains active (i.e., subsequent calls to epoll_wait() will
+inform us whenever the file descriptor is ready) until we explicitly remove it from
+the list using the epoll_ctl() EPOLL_CTL_DEL operation. If we want to be notified only
+once about a particular file descriptor, then we can specify the EPOLLONESHOT flag
+
+If this flag is
+specified, then, after the next epoll_wait() call that informs us that the corresponding
+file descriptor is ready, the file descriptor is marked inactive in the interest list, and
+we won’t be informed about its state by future epoll_wait() calls. If desired, we can
+subsequently reenable monitoring of this file descriptor using the epoll_ctl()
+EPOLL_CTL_MOD operation.
+
+--- 
+
+The refinement is this: an
+open file description is removed from the epoll interest list once all file descriptors that
+refer to it have been closed. This means that if we create duplicate descriptors refer-
+ring to an open file—using dup() (or similar) or fork()—then the open file will be
+removed only after the original descriptor and all of the duplicates have been closed.
+
+1.
+Make all file descriptors that are to be monitored nonblocking.
+2.
+Build the epoll interest list using epoll_ctl().
+3.
+Handle I/O events using the following loop:
+a)
+Retrieve a list of ready descriptors using epoll_wait().
+b)
+For each file descriptor that is ready, process I/O until the relevant system
+call (e.g., read(), write(), recv(), send(), or accept()) returns with the error EAGAIN
+or EWOULDBLOCK.

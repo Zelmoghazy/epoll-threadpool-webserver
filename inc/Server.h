@@ -41,5 +41,5 @@ struct EventPoll
     static void mod_fd_write_ctx(req_context *c);
     void event_loop();
     void handle_new_connections();
-    void handle_client_data(void* data);
+    void handle_client_data(req_context* context);
 };

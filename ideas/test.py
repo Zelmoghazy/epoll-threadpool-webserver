@@ -216,6 +216,6 @@ class HTTPServerTester:
             print("Unable to make final recommendations due to connection issues")
 
 if __name__ == "__main__":
-    server_url = "http://192.168.1.7:8080"
+    server_url = "http://localhost:8080"
     tester = HTTPServerTester(server_url)
     tester.run_comprehensive_test()

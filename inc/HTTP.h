@@ -64,18 +64,6 @@ enum write_req_status {
     WRITE_REQUEST_ERROR = -1
 };
 
-#define POOL_SIZE 1024 
-#define BLOCK_SIZE (sizeof(req_context) + MAX_REQUEST_SIZE)
-#define MAX_SPINS 1000 
-
-typedef struct context_pool{
-    char* memory_pool;
-    std::atomic_size_t bump_index;  // Current allocation index
-    void** free_blocks;        // Array of pointers to free blocks
-    std::atomic_int free_count;     // Number of blocks in free list
-    std::atomic_flag lock;          // Spinlock for thread safety
-    size_t total_blocks;       // Total number of blocks in pool
-} context_pool;
 
 typedef struct req_context
 {
@@ -93,6 +81,19 @@ typedef struct req_context
     FILE                *req_file;
     size_t               remaining;
 }req_context;
+
+#define POOL_SIZE 1024 
+#define BLOCK_SIZE (sizeof(req_context) + MAX_REQUEST_SIZE)
+#define MAX_SPINS 10
+
+typedef struct context_pool{
+    char* memory_pool;
+    std::atomic_size_t bump_index;  // Current allocation index
+    void** free_blocks;        // Array of pointers to free blocks
+    std::atomic_int free_count;     // Number of blocks in free list
+    std::atomic_flag lock;          // Spinlock for thread safety
+    size_t total_blocks;       // Total number of blocks in pool
+} context_pool;
 
 /* 
 struct context_pool
