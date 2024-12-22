@@ -9,12 +9,12 @@ DEPFLAGS=-MP -MD
 
 INCS=$(foreach DIR,$(INC_DIRS),-I$(DIR))
 LIBS=$(foreach DIR,$(LIB_DIRS),-L$(DIR))
-LIBS+=
+LIBS+=-l:libsqlite3.a
 
 CFLAGS=$(DBG) $(OPT) $(INCS) $(LIBS) $(WARNINGS) $(DEPFLAGS) $(STD)
 
 INC_DIRS=. ./inc/ ./external/inc/
-LIB_DIRS=
+LIB_DIRS=./external/lib/
 BUILD_DIR=build
 CODE_DIRS=. src external/src
 VPATH=$(CODE_DIRS)
@@ -61,6 +61,7 @@ clean:
 	rm -fR $(BUILD_DIR)
 graph:
 	gprof ./build/Main gmon.out | gprof2dot -w -s | dot -Tsvg -o output.svg
+	gprof ./build/Main gmon.out > analysis.txt
 
 -include $(DEP)
 

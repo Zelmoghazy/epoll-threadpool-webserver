@@ -1,11 +1,12 @@
 #pragma once 
 
+#include <functional>
+
 #include <sys/epoll.h>
+#include <unistd.h>
 
 #include <Socket.h>
 #include <ServerException.h>
-#include <functional>
-
 #include <ThreadPool.h>
 #include <HTTP.h>
 
@@ -13,6 +14,7 @@ struct EventPoll
 {
     Socket socket;
     ThreadPool thread_pool_; 
+    ContextPool ctx_pool;
 
     int epoll_fd;
 

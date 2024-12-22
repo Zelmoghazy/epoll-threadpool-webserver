@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+
+        .nav-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+            gap: 10px;
+        }
+
+        .back-button {
+            padding: 8px 16px;
+            background: #f0f0f0;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            display: none;
+        }
+
+        .back-button:hover {
+            background: #e0e0e0;
+        }
+
+        .current-path {
+            font-size: 14px;
+            color: #666;
+            margin-top: 20px;
+        }
+
+        .button-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .nav-button {
+            padding: 16px;
+            background: #0077bf;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            cursor: pointer;
+            text-align: left;
+            font-size: 16px;
+            color: white;
+            transition: all 0.2s;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .nav-button:hover {
+            background: #18b4fe;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .title {
+            font-size: 24px;
+            margin: 0;
+        }
+
+        .message {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 15px 25px;
+            border-radius: 4px;
+            color: white;
+            font-weight: bold;
+            z-index: 1000;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .success {
+            background-color: #4CAF50;
+        }
+
+        .error {
+            background-color: #f44336;
+        }
+
+        .notes-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 20px;
+        }
+
+        .note-textarea {
+            width: 100%;
+            min-height: 100px;
+            margin-bottom: 10px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        .new-note {
+            border-color: #4CAF50;
+        }
+
+        .add-note-button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="nav-header">
+            <button id="backButton" class="back-button">Back</button>
+            <h1 id="currentTitle" class="title">Homepage</h1>
+        </div>
+        <div id="buttonContainer" class="button-grid"></div>
+        <div id="currentPath" class="current-path"></div>
+    </div>
+
+    <script>
+        const PCControlModule = {
+            data: null,
+            navigationPath: [],
+
+            // Initialize the PC Control module
+            initialize: function (buttonContainer, backButton, currentTitle, currentPathElement) {
+                this.buttonContainer = buttonContainer;
+                this.backButton = backButton;
+                this.currentTitle = currentTitle;
+                this.currentPathElement = currentPathElement;
+
+                // Initial fetch button
+                const button = document.createElement('button');
+                button.className = 'nav-button';
+                button.textContent = 'PC Control';
+                button.onclick = () => this.fetchData();
+                buttonContainer.appendChild(button);
+            },
+            // Fetch data from the server
+            async fetchData() {
+                try {
+                    // Show loading state
+                    this.buttonContainer.innerHTML = '<div>Loading...</div>';
+
+                    const response = await fetch('/data');
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    this.data = await response.json();
+
+                    // Initialize navigation after data is loaded
+                    this.initializeNavigation();
+                } catch (error) {
+                    console.error('Error fetching data:', error);
+                    this.buttonContainer.innerHTML = `<div>Error loading data: ${error.message}</div>`;
+                }
+            },
+
+            // Get current level in the hierarchy
+            getCurrentLevel() {
+                let current = this.data.categories;
+                for (const path of this.navigationPath) {
+                    current = current[path]?.subcategories || current[path] || {};
+                }
+                return current;
+            },
+
+            /*
+                dynamically update the navigation UI based on 
+                the current level in the tree and navigation history. 
+             */
+            updateNavigation() 
+            {
+                // Clear existing buttons
+                this.buttonContainer.innerHTML = '';
+
+                // Get current level items
+                const currentLevel = this.getCurrentLevel();
+                const items = currentLevel.items || Object.keys(currentLevel);
+
+                // Create buttons for each item
+                items.forEach(item => {
+                    const button = document.createElement('button');
+                    button.className = 'nav-button';
+                    button.textContent = item;
+                    button.onclick = () => this.handleNavigation(item);
+                    this.buttonContainer.appendChild(button);
+                });
+
+                // Update title and back button
+                this.currentTitle.textContent = this.navigationPath.length === 0
+                    ? 'PC Control'
+                    : this.navigationPath[this.navigationPath.length - 1];
+
+                // Hide the back button at the top level 
+                this.backButton.style.display = this.navigationPath.length > 0 ? 'block' : 'none';
+
+                // Update current path display
+                this.currentPathElement.textContent = this.navigationPath.length > 0
+                    ? `Path: ${this.navigationPath.join(' > ')}`
+                    : '';
+            },
+
+
+            // Handle navigation clicks
+            async handleNavigation(item) 
+            {
+                const currentLevel = this.getCurrentLevel();
+
+                if (currentLevel[item]?.subcategories) {
+                    this.navigationPath.push(item);
+                    this.updateNavigation();
+                } else if (currentLevel[item]?.items) {
+                    this.navigationPath.push(item);
+                    this.updateNavigation();
+                } else {
+                    try {
+                        // Send action to server
+                        const response = await fetch('/action', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                action: item,
+                                path: this.navigationPath.join('/') // Include the current path
+                            }),
+                        });
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+
+                        const data = await response.text();
+                        console.log('Server response:', data);
+                        this.showMessage('Action executed successfully', 'success');
+
+                    } catch (error) {
+                        console.error('Error:', error);
+                        this.showMessage(`Error: ${error.message}`, 'error');
+                    }
+                }
+            },
+
+            // Initialize navigation system
+            initializeNavigation() 
+            {
+                // Set up back button handler
+                this.backButton.onclick = () => {
+                    this.navigationPath.pop();
+                    this.updateNavigation();
+                };
+
+                this.updateNavigation();
+            },
+
+            // Function to show messages to the user
+            showMessage(message, type) 
+            {
+                const messageContainer = document.createElement('div');
+                messageContainer.className = `message ${type}`;
+                messageContainer.textContent = message;
+
+                // Add to the DOM - adjust the selector based on your HTML structure
+                document.body.appendChild(messageContainer);
+
+                // Remove the message after 3 seconds
+                setTimeout(() => {
+                    messageContainer.remove();
+                }, 3000);
+            }
+        };
+
+        const NotesModule = {
+            // DOM elements
+            buttonContainer: null,
+            backButton: null,
+            currentTitle: null,
+            currentPathElement: null,
+
+            // Notes data
+            notes: [],
+
+            // Initialize the Notes module
+            initialize: function (buttonContainer, backButton, currentTitle, currentPathElement) {
+                this.buttonContainer = buttonContainer;
+                this.backButton = backButton;
+                this.currentTitle = currentTitle;
+                this.currentPathElement = currentPathElement;
+
+                // Create Notes mode button
+                const button = document.createElement('button');
+                button.className = 'nav-button';
+                button.textContent = 'Notes';
+                button.onclick = () => this.fetchNotes();
+                buttonContainer.appendChild(button);
+            },
+
+            // Fetch existing notes
+            async fetchNotes() {
+                try {
+                    // Clear previous content
+                    this.buttonContainer.innerHTML = '<div>Loading notes...</div>';
+
+                    // Fetch notes from server
+                    const response = await fetch('/notes');
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    // Parse notes and extract the notes array
+                    const data = await response.json();
+                    this.notes = data.notes || []; // Extract notes array or use empty array if not found
+
+                    // Render notes view
+                    this.renderNotesView();
+                } catch (error) {
+                    console.error('Error fetching notes:', error);
+                    this.buttonContainer.innerHTML = `<div>Error loading notes: ${error.message}</div>`;
+                }
+            },
+
+            // Render notes view
+            renderNotesView() {
+                // Clear previous content
+                this.buttonContainer.innerHTML = '';
+
+                // Update title
+                this.currentTitle.textContent = 'Notes';
+                this.currentPathElement.textContent = '';
+                this.backButton.style.display = 'none';
+
+                // Create container for notes and new note input
+                const notesContainer = document.createElement('div');
+                notesContainer.className = 'notes-container';
+
+                // Render existing notes
+                this.notes.forEach((note) => {
+                    const noteElement = document.createElement('textarea');
+                    noteElement.className = 'note-textarea';
+                    noteElement.value = note.content;
+                    noteElement.readOnly = true;
+                    notesContainer.appendChild(noteElement);
+                });
+
+                // Create new note input
+                const newNoteInput = document.createElement('textarea');
+                newNoteInput.className = 'note-textarea new-note';
+                newNoteInput.placeholder = 'Enter a new note...';
+                notesContainer.appendChild(newNoteInput);
+
+                // Create add note button
+                const addNoteButton = document.createElement('button');
+                addNoteButton.textContent = 'Add Note';
+                addNoteButton.className = 'add-note-button';
+                addNoteButton.onclick = () => this.addNote(newNoteInput);
+                notesContainer.appendChild(addNoteButton);
+
+                // Add to button container
+                this.buttonContainer.appendChild(notesContainer);
+            },
+
+            // Add a new note
+            async addNote(newNoteInput) {
+                const content = newNoteInput.value.trim();
+
+                if (!content) {
+                    this.showMessage('Note cannot be empty', 'error');
+                    return;
+                }
+
+                try {
+                    // Send new note to server
+                    const response = await fetch('/notes', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            content: content,
+                            timestamp: new Date().toISOString()
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    // Refresh notes after adding
+                    await this.fetchNotes();
+
+                    // Clear input
+                    newNoteInput.value = '';
+
+                    this.showMessage('Note added successfully', 'success');
+                } catch (error) {
+                    console.error('Error adding note:', error);
+                    this.showMessage(`Error: ${error.message}`, 'error');
+                }
+            },
+
+            // Show message to user
+            showMessage(message, type) {
+                const messageContainer = document.createElement('div');
+                messageContainer.className = `message ${type}`;
+                messageContainer.textContent = message;
+
+                document.body.appendChild(messageContainer);
+
+                setTimeout(() => {
+                    messageContainer.remove();
+                }, 3000);
+            }
+        };
+
+        // Initialization when DOM is loaded
+        document.addEventListener('DOMContentLoaded', () => 
+        {
+            PCControlModule.initialize(
+                document.getElementById('buttonContainer'),
+                document.getElementById('backButton'),
+                document.getElementById('currentTitle'),
+                document.getElementById('currentPath')
+            );
+            NotesModule.initialize(
+                document.getElementById('buttonContainer'),
+                document.getElementById('backButton'),
+                document.getElementById('currentTitle'),
+                document.getElementById('currentPath')
+            );
+        });
+    </script>
+</body>
+
+</html>

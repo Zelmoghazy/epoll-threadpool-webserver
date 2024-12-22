@@ -1,20 +1,23 @@
 #pragma once
 
-#include <cassert>
-#include <unistd.h>
-#include <array>
+#include <iostream>
 #include <vector>
 #include <string>
+#include <cassert>
+#include <array>
 #include <algorithm>
 #include <charconv>
 #include <ctime>
 #include <cerrno>
-#include <iostream>
-#include <sys/types.h>
 #include <unordered_map>
+#include <atomic>
+
+#include <sys/types.h>
 #include <linux/limits.h>
 #include <sys/sendfile.h>
-#include <Parser.h>
+#include <unistd.h>
+
+#include <Application.h>
 #include <Utils.h>
 
 #define MAX_REQUEST_SIZE    8192U     // cap it at 8K  
@@ -23,7 +26,7 @@
 
 using namespace std::literals;
 
-typedef enum StatusCode {
+enum class http_status_code: uint8_t {
     OK,
     Created,
     Accepted,
@@ -39,92 +42,71 @@ typedef enum StatusCode {
     NotImplemented,
     BadGateway,
     ServiceUnavailable,
-}StatusCode;
+};
 
-typedef struct status_code_t{
+struct status_code_t{
     int code;
     const char* reason;
-}status_code_t;
+};
 
-typedef enum req_state{
+enum class req_state{
     READING,
     WRITING,
     DONE
-}req_state;
-
-enum read_req_status {
-    READ_REQUEST_INCOMPLETE = 0,
-    READ_REQUEST_COMPLETE = 1,
-    READ_REQUEST_ERROR = -1
 };
 
-enum write_req_status {
-    WRITE_REQUEST_INCOMPLETE = 0,
-    WRITE_REQUEST_COMPLETE = 1,
-    WRITE_REQUEST_ERROR = -1
+enum class read_req_status {
+    INCOMPLETE = 0,
+    COMPLETE = 1,
+    ERROR = -1
 };
 
+enum class write_req_status {
+    INCOMPLETE = 0,
+    COMPLETE = 1,
+    ERROR = -1
+};
 
-typedef struct req_context
+struct req_context
 {
-    req_state           state;              // current state of the req
-    int                 connfd;             // client file descriptor
-    int                 epoll_fd;           // epoll file descriptor
+    req_state           state      = req_state::READING;         
+    int                 connfd     = -1;             
+    int                 epoll_fd   = -1;           
 
     /* Reading */
-    char                *read_buf;
-    char                *read_ptr;
-    ssize_t             read_cnt;
-    size_t              total_read;
+    char                *read_buf  = nullptr;
+    char                *read_ptr  = nullptr;
+    ssize_t             read_cnt   = 0;
+    size_t              total_read = 0;
 
     /* Writing */
-    FILE                *req_file;
-    size_t               remaining;
-}req_context;
+    FILE                *req_file  = nullptr;
+    size_t              remaining  = 0; 
+};
 
-#define POOL_SIZE 1024 
-#define BLOCK_SIZE (sizeof(req_context) + MAX_REQUEST_SIZE)
-#define MAX_SPINS 10
-
-typedef struct context_pool{
-    char* memory_pool;
-    std::atomic_size_t bump_index;  // Current allocation index
-    void** free_blocks;        // Array of pointers to free blocks
-    std::atomic_int free_count;     // Number of blocks in free list
-    std::atomic_flag lock;          // Spinlock for thread safety
-    size_t total_blocks;       // Total number of blocks in pool
-} context_pool;
-
-/* 
-struct context_pool
+struct ContextPool
 {
-    char* memory_pool;
-    size_t bump_index;          // Current allocation index
-    void** free_blocks;         // Array of pointers to free blocks
-    int free_count;             // Number of blocks in free list
-    size_t total_blocks;        // Total number of blocks in pool
+    char*              memory_pool;
+    std::atomic_size_t bump_index;          // Current allocation index
+    void**             free_blocks;         // Array of pointers to free blocks
+    std::atomic_int    free_count;          // Number of blocks in free list
+    std::atomic_flag   lock;                // Spinlock for thread safety
+    size_t             total_blocks;        // Total number of blocks in pool
 
-    static constexpr int POOL_SIZE  =   128;
+    static constexpr int POOL_SIZE  =  512;
     static constexpr int BLOCK_SIZE =  (sizeof(req_context) + MAX_REQUEST_SIZE);
+    static constexpr int MAX_SPINS  =  100;
 
-    context_pool();
-    ~context_pool();
+    ContextPool();
+    ~ContextPool();
+    static inline void spin_lock(std::atomic_flag* lock);
+    static inline void spin_unlock(std::atomic_flag* lock);
     req_context* alloc_req_context(int connfd, int epollfd);
     void free_req_context(req_context* ctx);
 };
-*/
 
 extern const std::unordered_map<std::string, std::string> mime_types;
 
-static inline void spin_lock(std::atomic_flag* lock);
-static inline void spin_unlock(std::atomic_flag* lock);
-context_pool* create_context_pool(void);
-void destroy_context_pool(context_pool* pool);
-req_context* alloc_req_context(context_pool* pool, int connfd, int epollfd);
-void free_req_context(context_pool* pool, req_context* ctx); 
-
-req_context *new_req_context(int connfd, int epollfd);
-void delete_req_context(req_context *c);
 ssize_t writen(int fd, const void *vptr, ssize_t n);
 ssize_t readn(req_context *c, char *ptr);
 
@@ -191,9 +173,9 @@ private:
 
 public:
     HTTPParser();
-    StatusCode parse_request(const char* req);
-    StatusCode parse_headers(std::string_view headers_view, size_t& headers_end);
-    StatusCode parse_body(std::string_view body_view, size_t body_start);
+    http_status_code parse_request(const char* req);
+    http_status_code parse_headers(std::string_view headers_view, size_t& headers_end);
+    http_status_code parse_body(std::string_view body_view, size_t body_start);
 
     static bool is_method_valid(std::string_view method);
     const std::string& get_method() const; 
@@ -205,26 +187,36 @@ public:
 
 };
 
+using RequestHandler = std::function<std::string&(req_context *c)>;
+
+struct http_uri_handler
+{
+    std::string_view uri;
+    std::string_view method;
+    RequestHandler handler  = nullptr;
+};
+
 class HTTPServer
 {
     HTTPParser  parser;
     HTTPBuilder builder;
     std::string root_directory;
 
-    using RequestHandler = std::function<std::string&(req_context *c)>;
-    std::unordered_map<std::string, std::unordered_map<std::string, RequestHandler>> route_handlers;
+    std::vector<http_uri_handler> route_handlers;
 
 public:
     HTTPServer(std::string root_dir = "./Web");
     void setup_default_routes();
-    void add_route(const std::string& method, const std::string& path, RequestHandler handler);
+    void add_route(const std::string_view method, const std::string_view path, RequestHandler handler);
+    bool match_route(const std::string_view uri, const std::string_view method);
+    http_uri_handler* find_handler(const std::string_view uri, const std::string_view method);
     std::string& response_static_file(req_context *c, const std::string& uri);
     std::string_view response_body(int status, const std::string& message);
     int send_response_header(req_context *c);
     int write_response(req_context *c , std::string& response);
     enum write_req_status send_response_file(req_context *c);
-    std::string& build_error_response(int status, const std::string& message) ;
-    std::string& build_success_response(int status, const std::string_view file_path, const size_t file_size);
+    std::string& build_error_response(http_status_code code, const std::string& message) ;
+    std::string& build_success_response(http_status_code code, const std::string_view file_path, const size_t file_size);
     FILE *get_file_info(const char* filepath, size_t &size);
     static enum read_req_status read_http_request(req_context *c);
 };

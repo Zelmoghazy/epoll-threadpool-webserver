@@ -1,20 +1,21 @@
 #pragma once
 
-#include <string>
+#include <iostream>
+#include <fstream> 
 #include <cerrno>
 #include <cstring>
+#include <string>
 #include <unordered_map>
-#include <fstream> 
-#include <iostream>
-#include <unistd.h>
+
 #include <sys/wait.h>
+#include <unistd.h>
+#include <fcntl.h>
+
 #include "cJSON.h"
 
 std::string read_entire_file(const std::string& filePath);
-std::string hashmapToJSON(std::unordered_map<std::string, std::string>& buttons);
-void appendToFile(const std::string& label, const std::string& action, const std::string& filename);
-void serializeMap(const std::unordered_map<std::string, std::string>& map, const std::string& filename);
-void deserializeMap(std::unordered_map<std::string, std::string>& map, const std::string& filename);
-void executeCommand(const std::string& command);
-
-
+std::string map_to_json(std::unordered_map<std::string, std::string>& buttons);
+void append_to_file(const std::string& label, const std::string& action, const std::string& filename);
+void map_serialize(const std::unordered_map<std::string, std::string>& map, const std::string& filename);
+void map_deserialize(std::unordered_map<std::string, std::string>& map, const std::string& filename);
+void execute_command(const std::string& command);

@@ -1,5 +1,4 @@
 #include <Utils.h>
-#include <fcntl.h>
 
 /* ----------------------- UTILS---------------------------------*/
 std::string read_entire_file(const std::string& filePath)
@@ -14,7 +13,7 @@ std::string read_entire_file(const std::string& filePath)
     return content;
 }
 
-std::string hashmapToJSON(std::unordered_map<std::string, std::string>& buttons) 
+std::string map_to_json(std::unordered_map<std::string, std::string>& buttons) 
 {
     cJSON *root = cJSON_CreateObject();
     cJSON *buttonArray = cJSON_CreateArray();
@@ -35,7 +34,7 @@ std::string hashmapToJSON(std::unordered_map<std::string, std::string>& buttons)
     return result;
 }
 
-void appendToFile(const std::string& label, const std::string& action, const std::string& filename) 
+void append_to_file(const std::string& label, const std::string& action, const std::string& filename) 
 {
     std::ofstream outFile;
     outFile.open(filename, std::ios::app); 
@@ -47,7 +46,7 @@ void appendToFile(const std::string& label, const std::string& action, const std
     outFile.close();
 }
 
-void serializeMap(const std::unordered_map<std::string, std::string>& map, const std::string& filename) 
+void map_serialize(const std::unordered_map<std::string, std::string>& map, const std::string& filename) 
 {
     std::ofstream file(filename);
     
@@ -63,7 +62,7 @@ void serializeMap(const std::unordered_map<std::string, std::string>& map, const
     file.close();  
 }
 
-void deserializeMap(std::unordered_map<std::string, std::string>& map, const std::string& filename) 
+void map_deserialize(std::unordered_map<std::string, std::string>& map, const std::string& filename) 
 {
     std::ifstream file(filename);
     
@@ -93,7 +92,7 @@ void deserializeMap(std::unordered_map<std::string, std::string>& map, const std
     file.close();
 }
 
-void executeCommand(const std::string& command)
+void execute_command(const std::string& command)
 {
     // will handle piping output later
     pid_t pid = fork();

@@ -1,5 +1,4 @@
 #include <Socket.h>
-#include <ServerException.h>
 
 Socket::Socket(): sockfd(-1){
     port.reserve(64);

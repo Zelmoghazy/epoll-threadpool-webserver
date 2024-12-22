@@ -1,5 +1,4 @@
 #include <HTTP.h>
-#include <atomic>
 
 std::unordered_map<std::string, std::string> buttons;
 
@@ -16,22 +15,22 @@ status_code_t codes[] =
     /*  2xx: Success - The action was successfully received, understood, and accepted. */
 
     {200, "OK"},
-    {201, "Created"},           // resulted in a new resource being created.
-    {202, "Accepted"},          // the processing has not been completed
-    {204, "No Content"},        // there is no new information to send back.
+    {201, "Created"},                 // resulted in a new resource being created.
+    {202, "Accepted"},                // the processing has not been completed
+    {204, "No Content"},              // there is no new information to send back.
 
     /*  3xx: Redirection - Further action must be taken in order to complete the request */
 
-    {301, "Moved Permanently"}, // requested resource has been assigned a new permanent URL
-    {302, "Moved Temporarily"}, // requested resource has been assigned a new permanent URL
-    {304, "Not Modified"},      // conditional GET request, not modified since
+    {301, "Moved Permanently"},       // requested resource has been assigned a new permanent URL
+    {302, "Moved Temporarily"},       // requested resource has been assigned a new permanent URL
+    {304, "Not Modified"},            // conditional GET request, not modified since
 
     /* 4xx: Client Error - The request contains bad syntax or cannot be fulfilled */
 
-    {400, "Bad Request"},       // malformed syntax.
-    {401, "Unauthorized"},      // request requires user authentication
-    {403, "Forbidden"},         // refusing to fulfill request.
-    {404, "Not Found"},         // didnt find anythin matching the request-URI
+    {400, "Bad Request"},             // malformed syntax.
+    {401, "Unauthorized"},            // request requires user authentication
+    {403, "Forbidden"},               // refusing to fulfill request.
+    {404, "Not Found"},               // didnt find anythin matching the request-URI
 
     /* 5xx: Server Error - The server failed to fulfill an apparently valid request */
 
@@ -91,30 +90,55 @@ constexpr std::array<std::string_view, 9> valid_methods =
     "OPTIONS", "PATCH", "TRACE", "CONNECT"
 };
 
-/* 
-context_pool::context_pool()
+
+inline void ContextPool::spin_lock(std::atomic_flag* lock)
+{
+    int spins = 0;
+    while (atomic_flag_test_and_set_explicit(lock, std::memory_order_acquire)) {
+        spins++;
+        if (spins > MAX_SPINS) {
+            sched_yield();  // Yield to other threads if spinning too long
+            spins = 0;
+        }
+    }
+}
+
+
+inline void ContextPool::spin_unlock(std::atomic_flag* lock) 
+{
+    atomic_flag_clear_explicit(lock, std::memory_order_release);
+}
+
+ContextPool::ContextPool()
 {
     size_t total_size = POOL_SIZE * BLOCK_SIZE;
+
     // alignment dont forget !!!
     memory_pool = (char *)aligned_alloc(64, total_size);  
+
     if (!memory_pool) {
         exit(1);
     }
     
     free_blocks = (void**)malloc(POOL_SIZE * sizeof(void*));
+
     if (!free_blocks) {
         free(memory_pool);
         exit(1);
     }
-    bump_index = 0;
-    free_count = 0;
+
+    atomic_init(&bump_index, 0);
+    atomic_init(&free_count, 0);
+    atomic_flag_clear(&lock);
     total_blocks = POOL_SIZE;
 }
 
-context_pool::~context_pool()
+ContextPool::~ContextPool()
 {
+    spin_lock(&lock);
+
     // Clean up any open files in active contexts
-    size_t current_index = bump_index;
+    size_t current_index = atomic_load(&bump_index);
     for (size_t i = 0; i < current_index; i++) {
         req_context* ctx = (req_context*)(memory_pool + (i * BLOCK_SIZE));
         if (ctx->req_file) {
@@ -126,42 +150,48 @@ context_pool::~context_pool()
     free(memory_pool);
 }
 
-req_context* context_pool::alloc_req_context(int connfd, int epollfd) 
+
+req_context* ContextPool::alloc_req_context(int connfd, int epollfd) 
 {
     req_context* ctx = nullptr;
+
+    ContextPool::spin_lock(&lock);
     
     // Try to reuse a freed block first
-    int free_idx = free_count - 1;
+    int free_idx = atomic_load(&free_count) - 1;
     if (free_idx >= 0) {
         ctx = (req_context*)free_blocks[free_idx];
-        free_count-= 1;
+        atomic_fetch_sub(&free_count, 1);
     }
     // Otherwise use bump allocation
-    else {
-        size_t index = bump_index;
+    else 
+    {
+        size_t index =  atomic_load(&bump_index);
         if (index < total_blocks) {
             ctx = (req_context*)(memory_pool + (index * BLOCK_SIZE));
             bump_index+= 1;
+            atomic_fetch_add(&bump_index, 1);
         }
     }
     
     if (ctx) {
         // Initialize the context while still holding the lock
-        ctx->state = READING;
-        ctx->connfd = connfd;
-        ctx->epoll_fd = epollfd;
-        ctx->read_buf = (char*)ctx + sizeof(req_context);
-        ctx->read_ptr = nullptr;
-        ctx->read_cnt = 0;
+        ctx->state      = req_state::READING;
+        ctx->connfd     = connfd;
+        ctx->epoll_fd   = epollfd;
+        ctx->read_buf   = (char*)ctx + sizeof(req_context);
+        ctx->read_ptr   = nullptr;
+        ctx->read_cnt   = 0;
         ctx->total_read = 0;
-        ctx->req_file = nullptr;
-        ctx->remaining = 0;
+        ctx->req_file   = nullptr;
+        ctx->remaining  = 0;
     }
+    ContextPool::spin_unlock(&lock);
     
     return ctx;
 }
 
-void context_pool::free_req_context(req_context* ctx) 
+void ContextPool::free_req_context(req_context* ctx) 
 {
     if (!ctx)
         return;
@@ -169,198 +199,29 @@ void context_pool::free_req_context(req_context* ctx)
     // Close file handle without lock since it's specific to this context
     if (ctx->req_file) {
         fclose(ctx->req_file);
-        ctx->req_file = NULL;
+        ctx->req_file = nullptr;
     }
+
+    ContextPool::spin_lock(&lock);
+
     
     // Add to free blocks if we have space
-    int current_free = free_count;
-    if (current_free < total_blocks) {
+    int current_free = atomic_load(&free_count);
+    if (current_free < (int)total_blocks) {
         free_blocks[current_free] = ctx;
-        free_count+= 1;
-    }
-} */
+        atomic_fetch_add(&free_count, 1);
 
-static inline void spin_lock(std::atomic_flag* lock) {
-    int spins = 0;
-    while (atomic_flag_test_and_set_explicit(lock, std::memory_order_acquire)) {
-        spins++;
-        if (spins > MAX_SPINS) {
-            sched_yield();  // Yield to other threads if spinning too long
-            spins = 0;
-        }
     }
-}
 
-static inline void spin_unlock(std::atomic_flag* lock) {
-    atomic_flag_clear_explicit(lock, std::memory_order_release);
-}
-
-context_pool* create_context_pool(void) 
-{
-    context_pool* pool = (context_pool*)malloc(sizeof(context_pool));
-    if (!pool) {
-        std::cerr << "Failed to allocate memory pool\n";
-        return nullptr;
-    }
-    
-    // Allocate the memory pool
-    size_t total_size = POOL_SIZE * BLOCK_SIZE;
-
-    // alignment dont forget !!!
-    pool->memory_pool = (char *)aligned_alloc(64, total_size);  // Cache-line aligned allocation
-    if (!pool->memory_pool) {
-        free(pool);
-        return nullptr;
-    }
-    
-    // Initialize free blocks array
-    pool->free_blocks = (void**)malloc(POOL_SIZE * sizeof(void*));
-    if (!pool->free_blocks) {
-        free(pool->memory_pool);
-        free(pool);
-        return nullptr;
-    }
-    
-    atomic_init(&pool->bump_index, 0);
-    atomic_init(&pool->free_count, 0);
-    atomic_flag_clear(&pool->lock);
-    pool->total_blocks = POOL_SIZE;
-    
-    return pool;
-}
-
-void destroy_context_pool(context_pool* pool) 
-{
-    if (!pool){
-        return;
-    }
-    
-    // Acquire lock before cleanup
-    spin_lock(&pool->lock);
-    
-    // Clean up any open files in active contexts
-    size_t current_index = atomic_load(&pool->bump_index);
-    for (size_t i = 0; i < current_index; i++) {
-        req_context* ctx = (req_context*)(pool->memory_pool + (i * BLOCK_SIZE));
-        if (ctx->req_file) {
-            fclose(ctx->req_file);
-        }
-    }
-    
-    free(pool->free_blocks);
-    free(pool->memory_pool);
-    free(pool);
-}
-
-req_context* alloc_req_context(context_pool* pool, int connfd, int epollfd) 
-{
-    if (!pool)
-    {
-        return nullptr;
-    }
-    
-    req_context* ctx = nullptr;
-    
-    spin_lock(&pool->lock);
-    
-    // Try to reuse a freed block first
-    int free_idx = atomic_load(&pool->free_count) - 1;
-    if (free_idx >= 0) {
-        ctx = (req_context*)pool->free_blocks[free_idx];
-        atomic_fetch_sub(&pool->free_count, 1);
-    }
-    // Otherwise use bump allocation
-    else 
-    {
-        size_t index = atomic_load(&pool->bump_index);
-        if (index < pool->total_blocks) {
-            ctx = (req_context*)(pool->memory_pool + (index * BLOCK_SIZE));
-            atomic_fetch_add(&pool->bump_index, 1);
-        }else{
-            std::cerr << "Give me more memory!!!\n";
-            exit(1);
-        }
-    }
-    
-    if (ctx) {
-        // Initialize the context while still holding the lock
-        ctx->state    = READING;
-        ctx->connfd   = connfd;
-        ctx->epoll_fd = epollfd;
-        ctx->read_buf = (char*)ctx + sizeof(req_context);
-        ctx->read_ptr = nullptr;
-        ctx->read_cnt = 0;
-        ctx->total_read = 0;
-        ctx->req_file = nullptr;
-        ctx->remaining = 0;
-    }
-    
-    spin_unlock(&pool->lock);
-    return ctx;
-}
-
-void free_req_context(context_pool* pool, req_context* ctx) 
-{
-    if (!pool || !ctx) return;
-    
-    // Close file handle without lock since it's specific to this context
-    if (ctx->req_file) {
-        fclose(ctx->req_file);
-        ctx->req_file = nullptr;
-    }
-    
-    spin_lock(&pool->lock);
-    
-    // Add to free blocks if we have space
-    int current_free = atomic_load(&pool->free_count);
-    if (current_free < (int)pool->total_blocks) {
-        pool->free_blocks[current_free] = ctx;
-        atomic_fetch_add(&pool->free_count, 1);
-    }
-    
-    spin_unlock(&pool->lock);
-}
-
-/* didnt want to make it a whole class */
-req_context *new_req_context(int connfd, int epollfd)
-{
-    req_context *c = new req_context;
-
-    c->state      = READING;
-    c->connfd     = connfd;
-    c->epoll_fd   = epollfd;
-
-    c->read_buf = new char[MAX_REQUEST_SIZE];
-    c->read_ptr = nullptr;
-    c->read_cnt = 0;
-    c->total_read = 0;
-
-    c->req_file = nullptr;
-    c->remaining = 0;
-
-    return c;
-}
-
-void delete_req_context(req_context *c)
-{
-    if (c)
-    {
-        delete[] c->read_buf;
-        if (c->req_file) {
-            fclose(c->req_file);
-            c->req_file = nullptr;
-        }
-        delete c;
-    }
-}
-
+    ContextPool::spin_unlock(&lock);
+} 
 
 /*
   From W. Richard Stevens - UNIX Network Programming 
   Attempts to Write "n" bytes to a descriptor. 
   Write may actually write less than expected for various reasons (interrupts, ..) 
 */
-ssize_t writen(int fd, const void *vptr, ssize_t n)  
+inline ssize_t writen(int fd, const void *vptr, ssize_t n)  
 {
     assert(n>0);
     
@@ -396,7 +257,7 @@ ssize_t writen(int fd, const void *vptr, ssize_t n)
     data is read into a buffer (read_buf) in chunks
     and then supplied to the caller one byte at a time 
 */
-ssize_t readn(req_context *c, char *ptr)
+inline ssize_t readn(req_context *c, char *ptr)
 {
     // check if the buffer still contains data
     if (c->read_cnt <= 0) {
@@ -593,6 +454,7 @@ HTTPBuilder& HTTPBuilder::http_resp_add_authorization(std::string_view auth)
     headers += "\r\n";
     return *this;
 }
+
 /*
     - The Date general-header field represents the date and time at which
       the message was originated
@@ -874,7 +736,7 @@ HTTPParser::HTTPParser()
     Request-Line = Method SP Request-URI SP HTTP-Version CRLF
     Method = "GET" | "HEAD" | "POST" 
 */
-StatusCode HTTPParser::parse_request(const char* req) 
+http_status_code HTTPParser::parse_request(const char* req) 
 {
     // clear first
     clear();
@@ -884,14 +746,14 @@ StatusCode HTTPParser::parse_request(const char* req)
     /* ------------------ Request line ------------------ */ 
     auto end_of_line = request.find("\r\n"sv);
     if (end_of_line == std::string_view::npos) {
-        return BadRequest; 
+        return http_status_code::BadRequest; 
     }
 
     std::string_view request_line = request.substr(0, end_of_line);
 
     auto first_space = request_line.find(' ');
     if (first_space == std::string_view::npos){
-        return BadRequest; 
+        return http_status_code::BadRequest; 
     }
 
     // Extract method
@@ -899,12 +761,12 @@ StatusCode HTTPParser::parse_request(const char* req)
 
     if(!is_method_valid(method))
     {
-        return BadRequest;
+        return http_status_code::BadRequest;
     }
 
     auto second_space = request_line.find(' ', first_space + 1);
     if (second_space == std::string_view::npos) {
-        return BadRequest; 
+        return http_status_code::BadRequest; 
     }
 
     // Extract URI : identifies the resource upon which to apply the request.
@@ -914,17 +776,17 @@ StatusCode HTTPParser::parse_request(const char* req)
     version += std::string(request_line.substr(second_space + 1));
 
     if (version.substr(0, 5) != "HTTP/") {
-        return BadRequest; 
+        return http_status_code::BadRequest; 
     }
 
     if (version != "HTTP/1.0" && version != "HTTP/1.1") {
-        return InternalServerError;  
+        return http_status_code::InternalServerError;  
     }
 
     size_t headers_end = 0;
 
-    StatusCode headers_status = parse_headers(request.substr(end_of_line + 2), headers_end);  
-    if(headers_status != OK){
+    http_status_code headers_status = parse_headers(request.substr(end_of_line + 2), headers_end);  
+    if(headers_status != http_status_code::OK){
         return headers_status;
     }
 
@@ -933,13 +795,13 @@ StatusCode HTTPParser::parse_request(const char* req)
         return parse_body(request, end_of_line + 2 + headers_end);
     }
 
-    return OK;
+    return http_status_code::OK;
 }
 
 /* 
     Request-Header = Authorization | From | If-Modified-Since | Referer | User-Agent
  */
-StatusCode HTTPParser::parse_headers(std::string_view headers_view, size_t& headers_end) 
+http_status_code HTTPParser::parse_headers(std::string_view headers_view, size_t& headers_end) 
 {
     header_count = 0;
     size_t pos = 0;
@@ -949,7 +811,7 @@ StatusCode HTTPParser::parse_headers(std::string_view headers_view, size_t& head
         // Find end of the current line
         auto end_of_line = headers_view.find("\r\n", pos);
         if (end_of_line == std::string_view::npos){
-            return BadRequest; 
+            return http_status_code::BadRequest; 
         } 
 
         // Get the header line
@@ -959,7 +821,7 @@ StatusCode HTTPParser::parse_headers(std::string_view headers_view, size_t& head
         if (line.empty()) {
             // we are done
             headers_end = pos;
-            return OK; 
+            return http_status_code::OK; 
         }
 
         auto colon_pos = line.find(':');
@@ -983,10 +845,10 @@ StatusCode HTTPParser::parse_headers(std::string_view headers_view, size_t& head
         header_count++;
     }
     // no empty line found
-    return BadRequest;
+    return http_status_code::BadRequest;
 }
 
-StatusCode HTTPParser::parse_body(std::string_view body_view, size_t body_start) 
+http_status_code HTTPParser::parse_body(std::string_view body_view, size_t body_start) 
 {
     /*
         A valid Content-Length is required on all HTTP/1.0 POST requests.
@@ -996,7 +858,7 @@ StatusCode HTTPParser::parse_body(std::string_view body_view, size_t body_start)
     std::string_view content_length = get_header("Content-Length");
     if(content_length.empty())
     {
-        return BadRequest;
+        return http_status_code::BadRequest;
     }
 
     /* Get length from string_view */
@@ -1009,13 +871,13 @@ StatusCode HTTPParser::parse_body(std::string_view body_view, size_t body_start)
     // Check given content length aligns with received data
     if(body_view.length() < body_start + length)
     {
-        return BadRequest;
+        return http_status_code::BadRequest;
     }
 
     // add the body
     body += body_view.substr(body_start, length);
 
-    return OK;
+    return http_status_code::OK;
 }
 
 bool HTTPParser::is_method_valid(std::string_view method) 
@@ -1041,7 +903,6 @@ const std::string& HTTPParser::get_body() const
 {
    return body; 
 }
-
 
 // Get specific header value
 std::string_view HTTPParser::get_header(std::string_view name) const 
@@ -1076,6 +937,7 @@ void HTTPParser::clear()
  */
 HTTPServer::HTTPServer(std::string root_dir)
 {
+    route_handlers.reserve(64);
     root_directory.reserve(PATH_MAX);
 
     char absolute_path[PATH_MAX]; 
@@ -1094,6 +956,29 @@ HTTPServer::HTTPServer(std::string root_dir)
     setup_default_routes();
 }
 
+const char* jsonString = "{\n"
+"    \"notes\": [\n"
+"        {\n"
+"            \"id\": 1,\n"
+"            \"content\": \"Remember to update server configs tomorrow\",\n"
+"            \"timestamp\": \"2024-12-23T14:30:00Z\",\n"
+"            \"category\": \"work\"\n"
+"        },\n"
+"        {\n"
+"            \"id\": 2,\n"
+"            \"content\": \"Call dentist to schedule appointment\",\n"
+"            \"timestamp\": \"2024-12-23T15:45:00Z\",\n"
+"            \"category\": \"personal\"\n"
+"        },\n"
+"        {\n"
+"            \"id\": 3,\n"
+"            \"content\": \"Team meeting notes:\\n- Review project timeline\\n- Discuss new features\\n- Plan next sprint\",\n"
+"            \"timestamp\": \"2024-12-23T16:00:00Z\",\n"
+"            \"category\": \"meetings\"\n"
+"        }\n"
+"    ]\n"
+"}";
+
 void HTTPServer::setup_default_routes() 
 {
     add_route("GET", "/", [this](req_context *c) -> std::string& {
@@ -1108,10 +993,25 @@ void HTTPServer::setup_default_routes()
         return response_static_file(c, "/hierarchy.html");
     });
 
+    add_route("GET", "/modules", [this](req_context *c) -> std::string& {
+        return response_static_file(c, "/modules.html");
+    });
+
+    add_route("GET", "/notes", [this](req_context *c) -> std::string& {
+        builder.clear();
+        return builder
+                .http_resp_add_status(static_cast<int>(http_status_code::OK))
+                .http_resp_add_content_type("application/json")
+                .http_resp_add_content_body(jsonString)
+                .http_resp_add_access_auth("*")
+                .http_resp_add_custom_header("Connecton", "close")
+                .build();
+    });
+
     add_route("GET", "/data", [this](req_context *c) -> std::string& {
-        Parser json_parser;
-        json_parser.parse_file("./Web/menu.txt", buttons);
-        json_parser.save_json("./Web/data.json");
+        AppLayout::Parser layout_parser;
+        layout_parser.parse_file("./Web/menu.txt", buttons);
+        layout_parser.save_json("./Web/data.json");
         return response_static_file(c, "/data.json");
     });
 
@@ -1127,22 +1027,58 @@ void HTTPServer::setup_default_routes()
                 // Log the action for debugging
                 std::cout << "Action received: " << action << std::endl;
 
-                executeCommand(buttons[action]);  
+                execute_command(buttons[action]);  
             }
             cJSON_Delete(json);
         }
         builder.clear();
         return builder
-                .http_resp_add_status(OK)
+                .http_resp_add_status(static_cast<int>(http_status_code::OK))
+                .http_resp_add_content_type("text/html")
+                .http_resp_add_content_body("<html><body><h1> Done </h1></body></html>")
                 .http_resp_add_access_auth("*")
                 .http_resp_add_custom_header("Connecton", "close")
                 .build();
     });
 }
 
-void HTTPServer::add_route(const std::string& method, const std::string& path, RequestHandler handler) 
+void HTTPServer::add_route(const std::string_view method, const std::string_view path, RequestHandler handler) 
 {
-    route_handlers[method][path] = handler;
+    if (method.empty() || path.empty()) {
+        return;
+    }
+    
+    // no duplicates
+    for (const auto& existing : route_handlers) {
+        if (existing.uri == path && existing.method == method) {
+            return;
+        }
+    }
+    
+    route_handlers.push_back(http_uri_handler{
+        .uri = path,
+        .method = method,
+        .handler = std::move(handler)
+    });
+}
+
+
+bool HTTPServer::match_route(const std::string_view uri, const std::string_view method) 
+{
+    auto it = std::find_if(route_handlers.begin(), route_handlers.end(),
+        [&](const auto& handler) {
+            return handler.uri == uri && handler.method == method;
+        });
+    return it != route_handlers.end();
+}
+
+http_uri_handler* HTTPServer::find_handler(const std::string_view uri, const std::string_view method) 
+{
+    auto it = std::find_if(route_handlers.begin(), route_handlers.end(),
+        [&](const auto& handler) {
+            return handler.uri == uri && handler.method == method;
+        });
+    return it != route_handlers.end() ? &(*it) : nullptr;
 }
 
 std::string& HTTPServer::response_static_file(req_context *c, const std::string& uri)
@@ -1161,27 +1097,27 @@ std::string& HTTPServer::response_static_file(req_context *c, const std::string&
     root_directory.resize(original_length);
 
     if (res == NULL){
-        return build_error_response(NotFound, "Invalid path");
+        return build_error_response(http_status_code::NotFound, "Invalid path");
     }
 
     std::string_view file_path = abs_path;
 
     // Double check nothing is going on
     if (file_path.substr(0, original_length) != root_directory) {
-        return build_error_response(NotFound, "Invalid path");
+        return build_error_response(http_status_code::NotFound, "Invalid path");
     }
 
     size_t file_size;
     FILE *file = get_file_info(abs_path, file_size);
 
     if(!file){
-        return build_error_response(NotFound, "Resource not found");
+        return build_error_response(http_status_code::NotFound, "Resource not found");
     }
 
     c->req_file      = file;
     c->remaining     = file_size;
 
-    return build_success_response(OK, file_path, file_size);
+    return build_success_response(http_status_code::OK, file_path, file_size);
 }
 
 std::string_view HTTPServer::response_body(int status, const std::string& message)
@@ -1200,14 +1136,14 @@ int HTTPServer::send_response_header(req_context *c)
     /* 
         regular references can only be bound once
      */
-    std::reference_wrapper<std::string> response = build_error_response(InternalServerError, "Internal Server Error");
+    std::reference_wrapper<std::string> response = build_error_response(http_status_code::InternalServerError, "Internal Server Error");
 
     switch(c->state)
     {
-        case WRITING:
+        case req_state::WRITING:
             switch(parser.parse_request(c->read_buf))
             {
-                case OK:
+                case http_status_code::OK:
                 {
                     const std::string& method = parser.get_method();
                     const std::string& uri    = parser.get_uri();
@@ -1221,43 +1157,36 @@ int HTTPServer::send_response_header(req_context *c)
                             be accessible via the HTTP server.
                     */
                     if (uri.find("..") != std::string::npos) {
-                        response = build_error_response(Forbidden, "Traversing file directory is not allowed");
+                        response = build_error_response(http_status_code::Forbidden, "Traversing file directory is not allowed");
                         break;
                     }
+                    
+                    http_uri_handler* handler = find_handler(uri, method);
 
-                    if (route_handlers.find(method) == route_handlers.end()) {
-                        response = build_error_response(NotImplemented, "Method not allowed on resource.");
-                        break;
-                    }
-
-                    // Check if route exists for this method
-                    auto& method_routes = route_handlers[method];
-
-                    // If there is no handle we will try to serve a static file 
-                    if (method_routes.find(uri) == method_routes.end()) 
+                    if (!handler) 
                     {
-                        if (method == "GET") 
-                        {
+                        if (method == "GET") {
+                            // try to serve static file if no handler exists
                             response = response_static_file(c, uri);
-                        }else{
-                            response = build_error_response(NotImplemented, "Method not allowed on resource.");
+                        } else {
+                            response = build_error_response(http_status_code::NotImplemented, "Method not allowed on resource.");
                         }
                         break;
                     }
-                    else
+                    else 
                     {
-                        response = route_handlers[method][uri](c);
+                        response = handler->handler(c);
                         break;
                     }
                     break;
                 }
                 
-                case BadRequest:
-                    response = build_error_response(BadRequest, "Bad Request");
+                case http_status_code::BadRequest:
+                    response = build_error_response(http_status_code::BadRequest, "Bad Request");
                     break;
                 
-                case InternalServerError:
-                    response = build_error_response(InternalServerError, "Internal Server Error");
+                case http_status_code::InternalServerError:
+                    response = build_error_response(http_status_code::InternalServerError, "Internal Server Error");
                     break;
                 
                 default:
@@ -1268,9 +1197,9 @@ int HTTPServer::send_response_header(req_context *c)
         /* 
             Error occurred while reading 
          */
-        case READING:
+        case req_state::READING:
             std::cerr << "Error state: shouldnt be sending response headers while in reading state" << std::endl;
-        case DONE:
+        case req_state::DONE:
             break;
     }
 
@@ -1288,7 +1217,7 @@ enum write_req_status HTTPServer::send_response_file(req_context *c)
 
     if(file==nullptr)
     {
-        return WRITE_REQUEST_COMPLETE;
+        return write_req_status::COMPLETE;
     }
 
     int filefd = fileno(file);
@@ -1318,12 +1247,12 @@ enum write_req_status HTTPServer::send_response_file(req_context *c)
                 break;
             } else {
                 std::cerr << "error sending file:" <<  std::strerror(errno) << std::endl;
-                return WRITE_REQUEST_ERROR;
+                return write_req_status::ERROR;
             }
         } 
         else if (writen == 0) 
         {
-            return WRITE_REQUEST_ERROR;
+            return write_req_status::ERROR;
         } 
         else
         {
@@ -1333,15 +1262,17 @@ enum write_req_status HTTPServer::send_response_file(req_context *c)
     }
 
     if (left == 0) {
-        return WRITE_REQUEST_COMPLETE;
+        return write_req_status::COMPLETE;
     } else {
         c->remaining = left;
-        return WRITE_REQUEST_INCOMPLETE;
+        return write_req_status::INCOMPLETE;
     }
 }
 
-std::string& HTTPServer::build_error_response(int status, const std::string& message) 
+std::string& HTTPServer::build_error_response(http_status_code code, const std::string& message) 
 {
+    int status = static_cast<int>(code);
+
     builder.clear();
     return builder
         .http_resp_add_status(status)
@@ -1352,8 +1283,10 @@ std::string& HTTPServer::build_error_response(int status, const std::string& mes
         .build();
 }
 
-std::string& HTTPServer::build_success_response(int status, const std::string_view file_path, const size_t file_size) 
+std::string& HTTPServer::build_success_response(http_status_code code, const std::string_view file_path, const size_t file_size) 
 { 
+    int status = static_cast<int>(code);
+
     builder.clear();
     return builder
         .http_resp_add_status(status)
@@ -1402,7 +1335,7 @@ enum read_req_status HTTPServer::read_http_request(req_context *c)
         if (c->total_read >= MAX_REQUEST_SIZE) 
         {
             std::cerr << "Exceeded Maximum request size ! :" << std::endl;
-            return READ_REQUEST_ERROR;
+            return read_req_status::ERROR;
         }
 
         // Detect request end
@@ -1430,7 +1363,7 @@ enum read_req_status HTTPServer::read_http_request(req_context *c)
             case R_GOT_CRLFCR:
                 if (ch == LF){
                     // done
-                    return READ_REQUEST_COMPLETE;
+                    return read_req_status::COMPLETE;
                 }
                 reading_stage = R_START;
                 break;
@@ -1442,17 +1375,17 @@ enum read_req_status HTTPServer::read_http_request(req_context *c)
     {
         /* Real error occurred */
         std::cerr << "EOF received, client may have disconnected : " << std::strerror(errno) << std::endl;
-        return READ_REQUEST_ERROR;
+        return read_req_status::ERROR;
     }
     else
     {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             /* Not ready to read now, rearm and return incomplete */
-            return READ_REQUEST_INCOMPLETE;
+            return read_req_status::INCOMPLETE;
         }
         /* Real error occurred */
         std::cerr << "Error occurred while reading : " << std::strerror(errno) << std::endl;
     }
     /* Need more data */
-    return READ_REQUEST_INCOMPLETE;
+    return read_req_status::INCOMPLETE;
 }

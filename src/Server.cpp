@@ -1,11 +1,6 @@
 #include <Server.h>
-#include <unistd.h>
 
-extern context_pool *ctx_pool;
-
-// when epoll_wait returns, this array is modified to indicate information
-// about the subset of file descriptors in the interest list that are in the ready state
-EventPoll::EventPoll(const char *ip, const char *port, std::function<void(req_context*)> client_handler):client_handler_(client_handler)
+EventPoll::EventPoll(const char *ip, const char *port, std::function<void(req_context*)> client_handler): client_handler_(client_handler)
 {
     socket.tcp_socket(ip, port);
     socket.wait_connection();
@@ -127,7 +122,11 @@ void EventPoll::event_loop()
         struct epoll_event {
             uint32_t     events;     // Epoll events 
             epoll_data_t data;       // User data variable 
-        }; 
+        };
+
+        when epoll_wait returns, this array is modified to indicate 
+        information about the subset of file descriptors in the 
+        interest list that are in the ready state
      */
     struct epoll_event events[MAX_EVENTS]; 
 
@@ -163,13 +162,13 @@ void EventPoll::event_loop()
             {
                 req_context *ctx = ((req_context* )events[i].data.ptr);
 
-                if((ctx->state == DONE) || (events[i].events & (EPOLLHUP | EPOLLERR)))
+                if((ctx->state == req_state::DONE) || (events[i].events & (EPOLLHUP | EPOLLERR)))
                 {
                     if(ctx->connfd){
                         close(ctx->connfd);
                     }
                     // delete_req_context(c);
-                    free_req_context(ctx_pool, ctx);
+                    ctx_pool.free_req_context(ctx);
                 }else{
                     handle_client_data(ctx);
                 }
@@ -196,7 +195,7 @@ void EventPoll::handle_new_connections()
         socket.set_non_blocking(connfd);
         
         // new data structure to hold the context of the IO
-        req_context* c = alloc_req_context(ctx_pool, connfd, epoll_fd);
+        req_context* c = ctx_pool.alloc_req_context(connfd, epoll_fd);
 
         /*
             - Associated file is available for read operations
@@ -208,7 +207,7 @@ void EventPoll::handle_new_connections()
         {
             // failed to register client, free memory and try again
             // delete_req_context(c);
-            free_req_context(ctx_pool,c);
+            ctx_pool.free_req_context(c);
             close(connfd);
             continue;
         }

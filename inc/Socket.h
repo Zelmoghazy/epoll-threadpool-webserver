@@ -1,19 +1,19 @@
 #pragma once
 
-#include <unistd.h> 
-#include <fcntl.h>
-#include <ifaddrs.h>
-#include <netdb.h>
-
+#include <iostream>
 #include <cerrno>
 #include <cstring>
-
-#include <iostream>
 #include <string>
 
 #include <sys/socket.h>
 #include <netinet/tcp.h> 
 #include <arpa/inet.h>
+#include <unistd.h> 
+#include <fcntl.h>
+#include <ifaddrs.h>
+#include <netdb.h>
+
+#include <ServerException.h>
 
 struct Socket
 {
