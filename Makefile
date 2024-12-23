@@ -34,7 +34,7 @@ all: $(BUILD_DIR)/$(EXEC)
 release: OPT += -O2
 release: all
 
-debug: DBG += -g -gdwarf-2
+debug: DBG += -g -gdwarf-2 -fsanitize=address
 debug: OPT += -O0
 debug: all
 

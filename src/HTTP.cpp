@@ -169,7 +169,6 @@ req_context* ContextPool::alloc_req_context(int connfd, int epollfd)
         size_t index =  atomic_load(&bump_index);
         if (index < total_blocks) {
             ctx = (req_context*)(memory_pool + (index * BLOCK_SIZE));
-            bump_index+= 1;
             atomic_fetch_add(&bump_index, 1);
         }
     }
