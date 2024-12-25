@@ -216,9 +216,10 @@ void ContextPool::free_req_context(req_context* ctx)
 } 
 
 /*
-  From W. Richard Stevens - UNIX Network Programming 
-  Attempts to Write "n" bytes to a descriptor. 
-  Write may actually write less than expected for various reasons (interrupts, ..) 
+    From W. Richard Stevens - UNIX Network Programming 
+    Attempts to Write "n" bytes to a descriptor. 
+    Write may actually write less than expected 
+    for various reasons (interrupts, ..) 
 */
 inline ssize_t writen(int fd, const void *vptr, ssize_t n)  
 {
@@ -232,8 +233,9 @@ inline ssize_t writen(int fd, const void *vptr, ssize_t n)
     nleft = (size_t)n;
 
     // loop until all bytes are written
-    while (nleft > 0) {
-        if ( (nwritten = write(fd, ptr, nleft)) <= 0) {
+    while (nleft > 0) 
+    {
+        if ((nwritten = write(fd, ptr, nleft)) <= 0) {
             // Interrupt occurred , just try again
             if (nwritten < 0 && errno == EINTR){
                 nwritten = 0;       /* and call write() again */

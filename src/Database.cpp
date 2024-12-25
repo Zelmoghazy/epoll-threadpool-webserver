@@ -1,166 +1,183 @@
 #include "Database.h"
+#include <cstring>
+#include <stdexcept>
 
-Database::Database(const char* s)
+const char* FIELD_TYPES_str[] = {
+    LIST_FIELD_TYPES(STRING_GEN)
+};
+
+Database::Database(const std::string& path)
 {
-    int ret = sqlite3_open(s, &DB);
-    if(ret != SQLITE_OK){
-        std::cerr << "Error occurred while opening sqlite connection:" 
-                  << s << '-' << sqlite3_errmsg(DB) 
-                  << std::endl; 
-		sqlite3_close(DB);
+    if(sqlite3_open(path.c_str(), &db) != SQLITE_OK){
+        throw std::runtime_error(sqlite3_errmsg(db));
     }
+    query.reserve(8192);
 }
 
 Database::~Database()
 {
-    if(DB){
-        sqlite3_close(DB);
+    if(db){
+        sqlite3_close(db);
     }
 }
 
-int Database::createTable(void)
+void Database::execute_query() 
 {
-	char* messageError;
-
-	std::string sql = "CREATE TABLE IF NOT EXISTS GRADES("
-		"ID INTEGER PRIMARY KEY AUTOINCREMENT, "
-		"NAME      TEXT NOT NULL, "
-		"LNAME     TEXT NOT NULL, "
-		"AGE       INT  NOT NULL, "
-		"ADDRESS   CHAR(50), "
-		"GRADE     CHAR(1) );";
-
-    /* 
-        An open database, SQL to be evaluated, Callback function, 
-        1st argument to callback, Error msg written here 
-    */
-    int ret = sqlite3_exec(DB, sql.c_str(), NULL, 0, &messageError);
-    
-    if (ret != SQLITE_OK) 
-    {
-        std::cerr << "Error in createTable function." << std::endl;
-        sqlite3_free(messageError);
+    char* errMsg = nullptr;
+    if (sqlite3_exec(db, query.c_str(), nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        std::string error = errMsg;
+        sqlite3_free(errMsg);
+        throw std::runtime_error("Query failed: " + error);
     }
-    else
-    {
-        std::cout << "Table created Successfully" << std::endl;
-    }
+    query.clear();
+}
 
-	return 0; 
+void Database::create_table(const std::string& tableName, cJSON* schema)
+{
+    query += "CREATE TABLE IF NOT EXISTS " + tableName + " (";
+    query += "id INTEGER PRIMARY KEY AUTOINCREMENT, ";
+        
+    cJSON* field;
+    cJSON_ArrayForEach(field, schema) {
+        query += field->string;
+        query += " ";
+        query += get_sql_type(static_cast<FIELD_TYPES>(static_cast<int>(cJSON_GetNumberValue(field))));
+        query += ", ";
+    }
+    query.pop_back();
+    query.pop_back(); // Remove last comma
+    query += ");";
+
+    execute_query();
 }
 
 
-int Database::insertData(void)
+void Database::insert(const std::string& tableName, cJSON* data) 
 {
-	char* messageError;
-		
-	std::string sql
-    (
-        "INSERT INTO GRADES (NAME, LNAME, AGE, ADDRESS, GRADE) VALUES('Alice', 'Chapa', 35, 'Tampa', 'A');"
-		"INSERT INTO GRADES (NAME, LNAME, AGE, ADDRESS, GRADE) VALUES('Bob', 'Lee', 20, 'Dallas', 'B');"
-		"INSERT INTO GRADES (NAME, LNAME, AGE, ADDRESS, GRADE) VALUES('Fred', 'Cooper', 24, 'New York', 'C');"
-    );
-
-	/* 
-        An open database, SQL to be evaluated, Callback function,
-        1st argument to callback, Error msg written here 
-    */
-	int ret = sqlite3_exec(DB, sql.c_str(), NULL, 0, &messageError);
-	if (ret != SQLITE_OK) {
-		std::cerr << "Error in insertData function." << std::endl;
-		sqlite3_free(messageError);
-	}
-	else
-    {
-		std::cout << "Records inserted Successfully!" << std::endl;
+    std::string columns = "", values = "";
+    cJSON* value;
+    cJSON_ArrayForEach(value, data) {
+        if (strcmp(value->string, "id") != 0) {
+            columns += value->string;
+            columns += ", ";
+            values += val_to_sql(value);
+            values += ", ";
+        }
     }
-	return 0;
+    columns.pop_back(); columns.pop_back();
+    values.pop_back(); values.pop_back();
+
+    query += "INSERT INTO " + tableName + " (" + columns + ") VALUES (" + values + ");";
+    execute_query();
 }
 
-int Database::updateData(void)
+cJSON* Database::select(const std::string& tableName, const std::string& condition) 
 {
-	char* messageError;
+    query += "SELECT * FROM " + tableName;
 
-	std::string sql
-    (
-        "UPDATE GRADES SET GRADE = 'A' WHERE LNAME = 'Cooper'"
-    );
-
-	/* 
-        An open database, SQL to be evaluated, Callback function, 
-        1st argument to callback, Error msg written here 
-    */
-	int ret = sqlite3_exec(DB, sql.c_str(), NULL, 0, &messageError);
-	if (ret != SQLITE_OK) {
-		std::cerr << "Error in updateData function." << std::endl;
-		sqlite3_free(messageError);
-	}
-	else
-    {
-		std::cout << "Records updated Successfully!" << std::endl;
+    if (!condition.empty()){
+        query += " WHERE " + condition;
     }
 
-	return 0;
-}
+    cJSON* result = cJSON_CreateArray();
 
-int Database::deleteData(void)
-{
-	char* messageError;
-
-	std::string sql = "DELETE FROM GRADES;";
-    
-	/* 
-        An open database, SQL to be evaluated, Callback function, 
-        1st argument to callback, Error msg written here 
-    */
-	int ret = sqlite3_exec(DB, sql.c_str(), callback, NULL, &messageError);
-	if (ret != SQLITE_OK) {
-		std::cerr << "Error in deleteData function." << std::endl;
-		sqlite3_free(messageError);
-	}
-	else
+    auto callback = [](void* data, int argc, char** argv, char** colNames) -> int 
     {
-		std::cout << "Records deleted Successfully!" << std::endl;
+        cJSON* result = static_cast<cJSON*>(data);
+        cJSON* row = cJSON_CreateObject();
+        
+        for (int i = 0; i < argc; i++) 
+        {
+            if (argv[i])
+            {
+                cJSON_AddStringToObject(row, colNames[i], argv[i]);
+            }
+            else 
+            {
+                cJSON_AddNullToObject(row, colNames[i]);
+            }
+        }
+        cJSON_AddItemToArray(result, row);
+        return 0;
+    };
+
+    char* errMsg = nullptr;
+    if (sqlite3_exec(db, query.c_str(), callback, result, &errMsg) != SQLITE_OK) {
+        std::string error = errMsg;
+        sqlite3_free(errMsg);
+        cJSON_Delete(result);
+        throw std::runtime_error("Select failed: " + error);
     }
 
-	return 0;
+    query.clear();
+
+    return result;
 }
 
-int Database::selectData(void)
+void Database::update(const std::string& tableName, cJSON* data, const std::string& condition) 
 {
-	char* messageError;
-
-	std::string sql = "SELECT * FROM GRADES;";
-
-	/* An open database, SQL to be evaluated, Callback function, 1st argument to callback, Error msg written here*/
-	int ret = sqlite3_exec(DB, sql.c_str(), callback, NULL, &messageError);
-
-	if (ret != SQLITE_OK) {
-		std::cerr << "Error in selectData function." << std::endl;
-		sqlite3_free(messageError);
-	}
-	else
+    std::string updates;
+    cJSON* value;
+    cJSON_ArrayForEach(value, data) 
     {
-		std::cout << "Records selected Successfully!" << std::endl;
+        if (strcmp(value->string, "id") != 0) {
+            updates += value->string;
+            updates += " = ";
+            updates += val_to_sql(value);
+            updates += ", ";
+        }
     }
+    updates.pop_back(); 
+    updates.pop_back();
 
-	return 0;
+    query += "UPDATE " + tableName + " SET " + updates;
+    if (!condition.empty())
+    {
+        query += " WHERE " + condition;
+    } 
+
+    execute_query();
 }
 
-/*
-    retrieve contents of database used by selectData()
-    - argc: holds the number of results, 
-    - argv: holds each value in array, 
-    - azColName: holds each column returned in array, 
-*/
-int Database::callback(void* NotUsed, int argc, char** argv, char** azColName)
+void Database::remove(const std::string& tableName, const std::string& condition) 
 {
-	for (int i = 0; i < argc; i++) {
-		// column name and value
-		std::cout << azColName[i] << ": " << argv[i] << std::endl;
-	}
+    query += "DELETE FROM " + tableName;
+    if (!condition.empty())
+    {
+        query += " WHERE " + condition;
+    }
+    execute_query();
+}
 
-	std::cout << std::endl;
+std::string val_to_sql(cJSON* value) 
+{
+    switch (value->type) 
+    {
+        case cJSON_String:
+            return "'" + std::string(value->valuestring) + "'";
+        case cJSON_NULL:
+            return "NULL";
+        case cJSON_Number:
+            return std::to_string(value->valuedouble);
+        case cJSON_True:
+            return "1";
+        case cJSON_False:
+            return "0";
+        default:
+            return "NULL";
+    }
+}
 
-	return 0;
+const char* Database::field_type_to_str(FIELD_TYPES ft)
+{
+    return FIELD_TYPES_str[static_cast<int>(ft)];
+}
+
+std::string Database::get_sql_type(FIELD_TYPES type) 
+{
+    auto it = sqlite_map.find(type);
+    if (it == sqlite_map.end()) {
+        throw std::runtime_error("Unsupported field type");
+    }
+    return it->second;
 }

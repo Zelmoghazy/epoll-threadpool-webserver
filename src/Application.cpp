@@ -168,3 +168,26 @@ std::string& Parser::get_json()
     return response;
 }
 
+
+using namespace modules;
+
+
+
+notes::notes()
+{
+    schema = cJSON_CreateObject();
+    cJSON_AddNumberToObject(schema, "category", static_cast<double>(FIELD_TYPES::TEXT));
+    cJSON_AddNumberToObject(schema, "timestamp", static_cast<double>(FIELD_TYPES::DATETIME));
+    cJSON_AddNumberToObject(schema, "content", static_cast<double>(FIELD_TYPES::TEXT));
+
+    // check if it exists what happens
+    db = new Database("notes.db");
+    db->create_table(TABLE_NAME, schema);
+}
+
+notes::~notes()
+{
+    if (schema) {
+        cJSON_Delete(schema);
+    }
+}

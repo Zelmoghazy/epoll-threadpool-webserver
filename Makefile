@@ -40,7 +40,8 @@ debug: all
 
 profile: DBG += -g -gdwarf-2
 profile: OPT += -O2
-profile: CFLAGS += -DNDEBUG -fno-inline-functions -fno-inline-functions-called-once -fno-optimize-sibling-calls -fno-default-inline -fno-inline -pg
+profile: CFLAGS += -DNDEBUG -pg
+#profile: CFLAGS += -fno-inline-functions -fno-inline-functions-called-once -fno-optimize-sibling-calls -fno-default-inline -fno-inline 
 profile: all
 
 $(BUILD_DIR)/%.o: %.$(EXT) | $(BUILD_DIR)
