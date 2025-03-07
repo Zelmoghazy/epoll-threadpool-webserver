@@ -6,12 +6,15 @@ DBG=
 WARNINGS=-Wall -Wextra -Wsign-conversion -Wconversion
 STD=-std=c++17
 DEPFLAGS=-MP -MD
+DEF=
 
 INCS=$(foreach DIR,$(INC_DIRS),-I$(DIR))
 LIBS=$(foreach DIR,$(LIB_DIRS),-L$(DIR))
 LIBS+=-l:libsqlite3.a
 
-CFLAGS=$(DBG) $(OPT) $(INCS) $(LIBS) $(WARNINGS) $(DEPFLAGS) $(STD)
+CPPFLAGS=$(DEPFLAGS) $(DEF) $(INCS)
+CFLAGS=$(DBG) $(OPT) $(WARNINGS) $(STD)
+LDFLAGS=$(LIBS)
 
 INC_DIRS=. ./inc/ ./external/inc/
 LIB_DIRS=./external/lib/
@@ -24,7 +27,8 @@ SRC=$(foreach DIR,$(CODE_DIRS),$(wildcard $(DIR)/*.$(EXT)))
 OBJ=$(addprefix $(BUILD_DIR)/,$(notdir $(SRC:.$(EXT)=.o)))
 DEP=$(addprefix $(BUILD_DIR)/,$(notdir $(SRC:.$(EXT)=.d)))
 
-EXEC=Main
+PROJ=Main
+EXEC=$(PROJ)
 
 all: $(BUILD_DIR)/$(EXEC)
 	@echo "========================================="
@@ -41,13 +45,13 @@ debug: all
 profile: DBG += -g -gdwarf-2
 profile: OPT += -O2
 profile: CFLAGS += -DNDEBUG -pg
-#profile: CFLAGS += -fno-inline-functions -fno-inline-functions-called-once -fno-optimize-sibling-calls -fno-default-inline -fno-inline 
+profile: CFLAGS += -fno-inline-functions -fno-inline-functions-called-once -fno-optimize-sibling-calls -fno-default-inline -fno-inline 
 profile: all
 
 $(BUILD_DIR)/%.o: %.$(EXT) | $(BUILD_DIR)
-	$(CC) -c  $< -o $@ $(CFLAGS)
+	$(CC) -c  $< -o $@ $(CPPFLAGS) $(CFLAGS)
 $(BUILD_DIR)/$(EXEC): $(OBJ)
-	$(CC)  $^ -o $@ $(CFLAGS)
+	$(CC) $^ -o $@ $(CPPFLAGS) $(CFLAGS) $(LDFLAGS)
 
 $(BUILD_DIR):
 	mkdir $@
@@ -61,9 +65,9 @@ $(BUILD_DIR):
 clean:
 	rm -fR $(BUILD_DIR)
 graph:
-	gprof ./build/Main gmon.out | gprof2dot -w -s | dot -Tsvg -o output.svg
-	gprof ./build/Main gmon.out > analysis.txt
+	gprof $(BUILD_DIR)/$(EXEC) gmon.out | gprof2dot -w -s | dot -Tsvg -o output.svg
+	gprof $(BUILD_DIR)/$(EXEC) gmon.out > analysis.txt
 
 -include $(DEP)
 
-.PHONY: all clean release debug
+.PHONY: all clean release debug graph profile

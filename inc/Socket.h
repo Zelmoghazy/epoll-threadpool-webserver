@@ -37,7 +37,7 @@ struct Socket
     Socket& operator=(Socket&& other) noexcept;
     
     void tcp_socket(const char *ip, const char* port);
-    void wait_connection();
+    void listen_connection();
     int accept_connection();
     int get_socket() const; 
 

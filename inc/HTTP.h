@@ -112,8 +112,10 @@ ssize_t readn(req_context *c, char *ptr);
 
 
 /* 
-    Very simple class to easily build HTTP responses
+    Very simple class to easily build HTTP responses in a
+    similar manner to immediate mode style
     Not necessarily needed but I wanted to try method chaining 
+    and it is easier to read
 */
 class HTTPBuilder 
 {

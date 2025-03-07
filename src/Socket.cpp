@@ -1,6 +1,7 @@
 #include <Socket.h>
 
-Socket::Socket(): sockfd(-1){
+Socket::Socket(): sockfd(-1)
+{
     port.reserve(64);
 }
 
@@ -85,7 +86,7 @@ void Socket::tcp_socket(const char *ip, const char* port)
     this->port += port;
 }
 
-void Socket::wait_connection()
+void Socket::listen_connection()
 {
     /* Convert socket to listening socket */
     if (listen(sockfd, BACKLOG) < 0) {          
@@ -134,8 +135,11 @@ std::string Socket::get_host_ip_addr()
 
     for (ifa = ifAddrStruct; ifa != nullptr; ifa = ifa->ifa_next) 
     {
-        if (ifa->ifa_addr == nullptr) continue;
+        if (ifa->ifa_addr == nullptr) {
+            continue;
+        }
 
+        /* Protocol Independent */
         if (ifa->ifa_addr->sa_family == AF_INET) 
         {
             tmpAddrPtr = &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr;
@@ -146,6 +150,18 @@ std::string Socket::get_host_ip_addr()
             if (strcmp(addressBuffer, "127.0.0.1") != 0) {
                 ipAddress = addressBuffer;
                 break;
+            }
+        }
+        else if (ifa->ifa_addr->sa_family == AF_INET6) 
+        {
+            tmpAddrPtr = &((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr;
+            char addressBuffer[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET6, tmpAddrPtr, addressBuffer, INET6_ADDRSTRLEN);
+            
+            // Skip loopback address and link-local addresses
+            if (strncmp(addressBuffer, "::1", 3) != 0 && 
+                strncmp(addressBuffer, "fe80:", 5) != 0) {
+                ipAddress = addressBuffer;
             }
         }
     }
@@ -159,15 +175,14 @@ std::string Socket::get_host_ip_addr()
 
 std::string Socket::get_host_name() 
 {
-    char hostname[256]; // Buffer to store the hostname
+    char hostname[256]; 
     
-    // Call get_host_name to get the name of the host
     if (gethostname(hostname, sizeof(hostname)) == -1) {
         perror("get_host_name");
         return "Error getting hostname";
     }
     
-    return std::string(hostname); // Convert to std::string
+    return std::string(hostname);
 }
 
 std::string Socket::get_ip_addr(struct sockaddr *sa) 
@@ -200,7 +215,7 @@ void Socket::set_non_blocking(int fd)
 {
     /* 
         - file control : set socket for nonblocking I/O
-          beware not to clear all the other file status flags.  
+        - Beware not to clear all the other file status flags.  
         - I/O system calls that would block now will return -1
           and errno will be set to EWOULDBLOCK or EAGAIN
     */
@@ -219,7 +234,7 @@ void Socket::set_opt_reuse_addr(bool on)
 
 void Socket::set_opt_keep_alive(bool on) 
 {
-    int optval = on ? 1 : 0;
+    int optval = on ? 1:0;
     if (setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &optval,sizeof(optval)) < 0) {
         std::cerr << "setsockopt error : " << __func__ << strerror(errno) << std::endl;
     }
@@ -228,7 +243,7 @@ void Socket::set_opt_keep_alive(bool on)
 // Disable Nagle's Algorithm
 void Socket::set_opt_tcp_no_delay(bool on) 
 {
-    int optval = on ? 1 : 0;
+    int optval = on ? 1:0;
     if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &optval,sizeof(optval)) < 0) {
         std::cerr << "setsockopt error : " << __func__ << strerror(errno) << std::endl;
     }
@@ -246,7 +261,7 @@ void Socket::set_opt_tcp_fast_open(bool len)
 
 void Socket::set_opt_tcp_quick_ack(bool on)
 {
-    int quickack = on ? 1 : 0;
+    int quickack = on ? 1:0;
     if (setsockopt(sockfd, IPPROTO_TCP, TCP_QUICKACK, &quickack, sizeof(quickack)) < 0) {
         std::cerr << "setsockopt error : " << __func__ << strerror(errno) << std::endl;
     }

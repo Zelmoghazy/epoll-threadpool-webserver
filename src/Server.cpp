@@ -3,7 +3,7 @@
 EventPoll::EventPoll(const char *ip, const char *port, std::function<void(req_context*)> client_handler): client_handler_(client_handler)
 {
     socket.tcp_socket(ip, port);
-    socket.wait_connection();
+    socket.listen_connection();
 
     // creates a new epoll instance and returns a file descriptor referring to that instance.
     if ((epoll_fd = epoll_create1(0)) < 0) {
@@ -14,7 +14,10 @@ EventPoll::EventPoll(const char *ip, const char *port, std::function<void(req_co
     register_fd(socket.get_socket(), (EPOLLIN | EPOLLET));
 }
 
-EventPoll::EventPoll(const char* port,  std::function<void(req_context*)> client_handler) : EventPoll(NULL,port,client_handler){}
+EventPoll::EventPoll(const char* port,  std::function<void(req_context*)> client_handler) : EventPoll(NULL,port,client_handler)
+{
+
+}
 
 EventPoll::~EventPoll() 
 {
@@ -167,7 +170,6 @@ void EventPoll::event_loop()
                     if(ctx->connfd){
                         close(ctx->connfd);
                     }
-                    // delete_req_context(c);
                     ctx_pool.free_req_context(ctx);
                 }else{
                     handle_client_data(ctx);

@@ -9,7 +9,7 @@
 thread_local HTTPServer http_server;
 
 // State machine to handle incoming HTTP request
-void handleClient(req_context *c) 
+void handle_client(req_context *c) 
 {
     if(c->state == req_state::READING)
     {
@@ -78,7 +78,7 @@ int main(void)
     signal(SIGINT, signalHandler);
     signal(SIGPIPE, SIG_IGN);
 
-    EventPoll ep("8080", handleClient);
+    EventPoll ep("8080", handle_client);
     ep.event_loop();
 
     return 0;

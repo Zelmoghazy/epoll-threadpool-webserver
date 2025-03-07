@@ -222,6 +222,6 @@ namespace modules
             }
         }
 
-    }
+    };
 
 }
