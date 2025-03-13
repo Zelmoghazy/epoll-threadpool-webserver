@@ -59,7 +59,7 @@ namespace AppLayout
 }
 
 
-
+#if 0
 namespace modules
 {
     struct notes
@@ -225,3 +225,4 @@ namespace modules
     };
 
 }
+#endif

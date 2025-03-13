@@ -168,10 +168,8 @@ std::string& Parser::get_json()
     return response;
 }
 
-
+#if 0
 using namespace modules;
-
-
 
 notes::notes()
 {
@@ -191,3 +189,4 @@ notes::~notes()
         cJSON_Delete(schema);
     }
 }
+#endif

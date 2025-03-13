@@ -6,6 +6,26 @@ const char* FIELD_TYPES_str[] = {
     LIST_FIELD_TYPES(STRING_GEN)
 };
 
+
+std::string Database::val_to_sql(cJSON* value) 
+{
+    switch (value->type) 
+    {
+        case cJSON_String:
+            return "'" + std::string(value->valuestring) + "'";
+        case cJSON_NULL:
+            return "NULL";
+        case cJSON_Number:
+            return std::to_string(value->valuedouble);
+        case cJSON_True:
+            return "1";
+        case cJSON_False:
+            return "0";
+        default:
+            return "NULL";
+    }
+}
+
 Database::Database(const std::string& path)
 {
     if(sqlite3_open(path.c_str(), &db) != SQLITE_OK){
@@ -100,6 +120,7 @@ cJSON* Database::select(const std::string& tableName, const std::string& conditi
         cJSON_AddItemToArray(result, row);
         return 0;
     };
+    
 
     char* errMsg = nullptr;
     if (sqlite3_exec(db, query.c_str(), callback, result, &errMsg) != SQLITE_OK) {
@@ -147,25 +168,6 @@ void Database::remove(const std::string& tableName, const std::string& condition
         query += " WHERE " + condition;
     }
     execute_query();
-}
-
-std::string val_to_sql(cJSON* value) 
-{
-    switch (value->type) 
-    {
-        case cJSON_String:
-            return "'" + std::string(value->valuestring) + "'";
-        case cJSON_NULL:
-            return "NULL";
-        case cJSON_Number:
-            return std::to_string(value->valuedouble);
-        case cJSON_True:
-            return "1";
-        case cJSON_False:
-            return "0";
-        default:
-            return "NULL";
-    }
 }
 
 const char* Database::field_type_to_str(FIELD_TYPES ft)
